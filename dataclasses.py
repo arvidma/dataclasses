@@ -1184,9 +1184,11 @@ def replace(obj, **changes):
 
         if f.name not in changes:
             if f._field_type is _FIELD_INITVAR:
-                raise ValueError(f"InitVar {f.name!r} "
-                                 'must be specified with replace()')
-            changes[f.name] = getattr(obj, f.name)
+                if f.default is MISSING and f.default_factory is MISSING:
+                    raise ValueError(f"InitVar {f.name!r} "
+                                     'must be specified with replace()')
+            else:
+                changes[f.name] = getattr(obj, f.name)
 
     # Create the new object, which calls __init__() and
     # __post_init__() (if defined), using all of the init fields we've
