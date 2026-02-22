@@ -1498,20 +1498,20 @@ def make_dataclass(
     # of generic dataclassses.
     cls = types.new_class(cls_name, bases, {}, lambda ns: ns.update(namespace))
     if decorator is None:
-        return dataclass(
-            cls,
-            init=init,
-            repr=repr,
-            eq=eq,
-            order=order,
-            unsafe_hash=unsafe_hash,
-            frozen=frozen,
-            match_args=match_args,
-            kw_only=kw_only,
-            slots=slots,
-            weakref_slot=weakref_slot,
-        )
-    return decorator(cls)
+        decorator = dataclass
+    return decorator(
+        cls,
+        init=init,
+        repr=repr,
+        eq=eq,
+        order=order,
+        unsafe_hash=unsafe_hash,
+        frozen=frozen,
+        match_args=match_args,
+        kw_only=kw_only,
+        slots=slots,
+        weakref_slot=weakref_slot,
+    )
 
 
 def replace(obj, **changes):
