@@ -297,16 +297,19 @@ class _DataclassParams:
                  'order',
                  'unsafe_hash',
                  'frozen',
+                 'match_args',
                  'kw_only',
                  )
 
-    def __init__(self, init, repr, eq, order, unsafe_hash, frozen, kw_only):
+    def __init__(self, init, repr, eq, order, unsafe_hash, frozen,
+                 match_args, kw_only):
         self.init = init
         self.repr = repr
         self.eq = eq
         self.order = order
         self.unsafe_hash = unsafe_hash
         self.frozen = frozen
+        self.match_args = match_args
         self.kw_only = kw_only
 
     def __repr__(self):
@@ -317,6 +320,7 @@ class _DataclassParams:
                 f'order={self.order!r},'
                 f'unsafe_hash={self.unsafe_hash!r},'
                 f'frozen={self.frozen!r},'
+                f'match_args={self.match_args!r},'
                 f'kw_only={self.kw_only!r}'
                 ')')
 
@@ -831,7 +835,8 @@ _hash_action = {(False, False, False, False): None,
 # version of this table.
 
 
-def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen, kw_only):
+def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen,
+                   match_args, kw_only):
     # Now that dicts retain insertion order, there's no reason to use
     # an ordered dict.  I am leveraging that ordering here, because
     # derived class fields overwrite base class fields, but the order
@@ -839,7 +844,8 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen, kw_only):
     fields = {}
 
     setattr(cls, _PARAMS, _DataclassParams(init, repr, eq, order,
-                                           unsafe_hash, frozen, kw_only))
+                                           unsafe_hash, frozen,
+                                           match_args, kw_only))
 
     # Find our base classes in reverse MRO order, and exclude
     # ourselves.  In reversed order so that more derived classes
@@ -975,6 +981,12 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen, kw_only):
                                             else 'self',
                           ))
 
+    # Set __match_args__ if match_args is true and __init__ is being
+    # generated.  Use the std_init_fields (non-kw-only) for this.
+    if match_args:
+        _set_new_attribute(cls, '__match_args__',
+                           tuple(f.name for f in std_init_fields))
+
     # Get the fields as a list, and include only real fields.  This is
     # used in all of the following methods.
     field_list = [f for f in fields.values() if f._field_type is _FIELD]
@@ -1033,7 +1045,7 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen, kw_only):
 # underscore.  The presence of _cls is used to detect if this
 # decorator is being called with parameters or not.
 def dataclass(_cls=None, *, init=True, repr=True, eq=True, order=False,
-              unsafe_hash=False, frozen=False, kw_only=False):
+              unsafe_hash=False, frozen=False, match_args=True, kw_only=False):
     """Returns the same class as was passed in, with dunder methods
     added based on the fields defined in the class.
 
@@ -1049,7 +1061,7 @@ def dataclass(_cls=None, *, init=True, repr=True, eq=True, order=False,
 
     def wrap(cls):
         return _process_class(cls, init, repr, eq, order, unsafe_hash,
-                              frozen, kw_only)
+                              frozen, match_args, kw_only)
 
     # See if we're being called as @dataclass or @dataclass().
     if _cls is None:
@@ -1172,7 +1184,7 @@ def _astuple_inner(obj, tuple_factory):
 
 def make_dataclass(cls_name, fields, *, bases=(), namespace=None, init=True,
                    repr=True, eq=True, order=False, unsafe_hash=False,
-                   frozen=False, kw_only=False):
+                   frozen=False, match_args=True, kw_only=False):
     """Return a new dynamically created dataclass.
 
     The dataclass name will be 'cls_name'.  'fields' is an iterable
@@ -1233,7 +1245,8 @@ def make_dataclass(cls_name, fields, *, bases=(), namespace=None, init=True,
     # of generic dataclassses.
     cls = types.new_class(cls_name, bases, {}, lambda ns: ns.update(namespace))
     return dataclass(cls, init=init, repr=repr, eq=eq, order=order,
-                     unsafe_hash=unsafe_hash, frozen=frozen, kw_only=kw_only)
+                     unsafe_hash=unsafe_hash, frozen=frozen,
+                     match_args=match_args, kw_only=kw_only)
 
 
 def replace(obj, **changes):
