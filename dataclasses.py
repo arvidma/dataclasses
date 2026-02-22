@@ -367,13 +367,13 @@ def _create_fn(name, args, body, *, globals=None, locals=None,
 
 def _field_assign(frozen, name, value, self_name):
     # If we're a frozen class, then assign to our fields in __init__
-    # via object.__setattr__.  Otherwise, just use a simple
-    # assignment.
+    # via __dataclass_builtins_object__.__setattr__.  Otherwise, just
+    # use a simple assignment.
     #
     # self_name is what "self" is called in this function: don't
     # hard-code "self", since that might be a field name.
     if frozen:
-        return f'object.__setattr__({self_name},{name!r},{value})'
+        return f'__dataclass_builtins_object__.__setattr__({self_name},{name!r},{value})'
     return f'{self_name}.{name}={value}'
 
 
@@ -381,14 +381,14 @@ def _field_init(f, frozen, globals, self_name):
     # Return the text of the line in the body of __init__ that will
     # initialize this field.
 
-    default_name = f'_dflt_{f.name}'
+    default_name = f'__dataclass_dflt_{f.name}__'
     if f.default_factory is not MISSING:
         if f.init:
             # This field has a default factory.  If a parameter is
             # given, use it.  If not, call the factory.
             globals[default_name] = f.default_factory
             value = (f'{default_name}() '
-                     f'if {f.name} is _HAS_DEFAULT_FACTORY '
+                     f'if {f.name} is __dataclass_HAS_DEFAULT_FACTORY__ '
                      f'else {f.name}')
         else:
             # This is a field that's not in the __init__ params, but
@@ -443,11 +443,11 @@ def _init_param(f):
     elif f.default is not MISSING:
         # There's a default, this will be the name that's used to look
         # it up.
-        default = f'=_dflt_{f.name}'
+        default = f'=__dataclass_dflt_{f.name}__'
     elif f.default_factory is not MISSING:
         # There's a factory function.  Set a marker.
-        default = '=_HAS_DEFAULT_FACTORY'
-    return f'{f.name}:_type_{f.name}{default}'
+        default = '=__dataclass_HAS_DEFAULT_FACTORY__'
+    return f'{f.name}:__dataclass_type_{f.name}__{default}'
 
 
 def _init_fn(fields, frozen, has_post_init, self_name):
@@ -469,7 +469,8 @@ def _init_fn(fields, frozen, has_post_init, self_name):
                                 'follows default argument')
 
     globals = {'MISSING': MISSING,
-               '_HAS_DEFAULT_FACTORY': _HAS_DEFAULT_FACTORY}
+               '__dataclass_HAS_DEFAULT_FACTORY__': _HAS_DEFAULT_FACTORY,
+               '__dataclass_builtins_object__': object}
 
     body_lines = []
     for f in fields:
@@ -489,7 +490,7 @@ def _init_fn(fields, frozen, has_post_init, self_name):
     if not body_lines:
         body_lines = ['pass']
 
-    locals = {f'_type_{f.name}': f.type for f in fields}
+    locals = {f'__dataclass_type_{f.name}__': f.type for f in fields}
     return _create_fn('__init__',
                       [self_name] + [_init_param(f) for f in fields if f.init],
                       body_lines,
@@ -702,7 +703,7 @@ def _get_field(cls, a_name, a_type):
         # ClassVar and InitVar to specify init=<anything>.
 
     # For real fields, disallow mutable defaults for known types.
-    if f._field_type is _FIELD and isinstance(f.default, (list, dict, set)):
+    if f._field_type is _FIELD and f.default.__class__.__hash__ is None:
         raise ValueError(f'mutable default {type(f.default)} for field '
                          f'{f.name} is not allowed: use default_factory')
 
@@ -981,7 +982,7 @@ def fields(class_or_instance):
     try:
         fields = getattr(class_or_instance, _FIELDS)
     except AttributeError:
-        raise TypeError('must be called with a dataclass type or instance')
+        raise TypeError('must be called with a dataclass type or instance') from None
 
     # Exclude pseudo-fields.  Note that fields is sorted by insertion
     # order, so the order of the tuple is as the fields were defined.
@@ -990,13 +991,14 @@ def fields(class_or_instance):
 
 def _is_dataclass_instance(obj):
     """Returns True if obj is an instance of a dataclass."""
-    return not isinstance(obj, type) and hasattr(obj, _FIELDS)
+    return hasattr(type(obj), _FIELDS)
 
 
 def is_dataclass(obj):
     """Returns True if obj is a dataclass or an instance of a
     dataclass."""
-    return hasattr(obj, _FIELDS)
+    cls = obj if isinstance(obj, type) else type(obj)
+    return hasattr(cls, _FIELDS)
 
 
 def asdict(obj, *, dict_factory=dict):
