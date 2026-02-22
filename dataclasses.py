@@ -4,6 +4,7 @@ import copy
 import types
 import inspect
 import keyword
+import itertools
 from reprlib import recursive_repr
 
 __all__ = ['dataclass',
@@ -299,10 +300,12 @@ class _DataclassParams:
                  'frozen',
                  'match_args',
                  'kw_only',
+                 'slots',
+                 'weakref_slot',
                  )
 
     def __init__(self, init, repr, eq, order, unsafe_hash, frozen,
-                 match_args, kw_only):
+                 match_args, kw_only, slots, weakref_slot):
         self.init = init
         self.repr = repr
         self.eq = eq
@@ -311,6 +314,8 @@ class _DataclassParams:
         self.frozen = frozen
         self.match_args = match_args
         self.kw_only = kw_only
+        self.slots = slots
+        self.weakref_slot = weakref_slot
 
     def __repr__(self):
         return ('_DataclassParams('
@@ -321,7 +326,9 @@ class _DataclassParams:
                 f'unsafe_hash={self.unsafe_hash!r},'
                 f'frozen={self.frozen!r},'
                 f'match_args={self.match_args!r},'
-                f'kw_only={self.kw_only!r}'
+                f'kw_only={self.kw_only!r},'
+                f'slots={self.slots!r},'
+                f'weakref_slot={self.weakref_slot!r}'
                 ')')
 
 
@@ -397,7 +404,7 @@ def _field_assign(frozen, name, value, self_name):
     return f'{self_name}.{name}={value}'
 
 
-def _field_init(f, frozen, globals, self_name):
+def _field_init(f, frozen, globals, self_name, slots):
     # Return the text of the line in the body of __init__ that will
     # initialize this field.
 
@@ -437,9 +444,16 @@ def _field_init(f, frozen, globals, self_name):
                 globals[default_name] = f.default
                 value = f.name
         else:
-            # This field does not need initialization.  Signify that
-            # to the caller by returning None.
-            return None
+            # If the class has slots, then initialize this field.
+            if slots and f.default is not MISSING:
+                globals[default_name] = f.default
+                value = default_name
+            else:
+                # This field does not need initialization: reading from
+                # it will just use the class attribute that contains
+                # the default.  Signify that to the caller by
+                # returning None.
+                return None
 
     # Only test this now, so that we can create variables for the
     # default.  However, return None to signify that we're not going
@@ -478,7 +492,8 @@ def _fields_in_init_order(fields):
             tuple(f for f in fields if f.init and f.kw_only))
 
 
-def _init_fn(fields, std_fields, kw_only_fields, frozen, has_post_init, self_name):
+def _init_fn(fields, std_fields, kw_only_fields, frozen, has_post_init,
+             self_name, slots=False):
     # fields contains both real fields and InitVar pseudo-fields.
 
     # Make sure we don't have fields without defaults following fields
@@ -502,7 +517,7 @@ def _init_fn(fields, std_fields, kw_only_fields, frozen, has_post_init, self_nam
 
     body_lines = []
     for f in fields:
-        line = _field_init(f, frozen, globals, self_name)
+        line = _field_init(f, frozen, globals, self_name, slots)
         # line is None means that this field doesn't require
         # initialization (it's a pseudo-field).  Just skip it.
         if line:
@@ -835,8 +850,90 @@ _hash_action = {(False, False, False, False): None,
 # version of this table.
 
 
+def _dataclass_getstate(self):
+    return [getattr(self, f.name) for f in fields(self)]
+
+
+def _dataclass_setstate(self, state):
+    for field, value in zip(fields(self), state):
+        # use setattr because dataclass may be frozen
+        object.__setattr__(self, field.name, value)
+
+
+def _get_slots(cls):
+    slots = cls.__dict__.get('__slots__')
+    if slots is None:
+        result = []
+        if getattr(cls, '__weakrefoffset__', -1) != 0:
+            result.append('__weakref__')
+        if getattr(cls, '__dictoffset__', -1) != 0:
+            result.append('__dict__')
+        return result
+    elif isinstance(slots, str):
+        return [slots]
+    elif hasattr(slots, '__next__'):
+        raise TypeError(f"Slots of '{cls.__name__}' cannot be determined")
+    else:
+        return list(slots)
+
+
+def _add_slots(cls, is_frozen, weakref_slot):
+    # Need to create a new class, since we can't set __slots__
+    # after a class has been created.
+
+    # Make sure __slots__ isn't already set.
+    if '__slots__' in cls.__dict__:
+        raise TypeError(f'{cls.__name__} already specifies __slots__')
+
+    # Create a new dict for our new class.
+    cls_dict = dict(cls.__dict__)
+    field_names = tuple(f.name for f in fields(cls))
+    # Make sure slots don't overlap with those in base classes.
+    inherited_slots = set(
+        itertools.chain.from_iterable(map(_get_slots, cls.__mro__[1:-1]))
+    )
+    # The slots for our class.  Remove slots from our base classes.  Add
+    # '__weakref__' if weakref_slot was given, unless it is already present.
+    cls_dict['__slots__'] = tuple(
+        itertools.filterfalse(
+            inherited_slots.__contains__,
+            itertools.chain(
+                # gh-93521: '__weakref__' also needs to be filtered out if
+                # already present in inherited_slots
+                field_names, ('__weakref__',) if weakref_slot else ()
+            )
+        ),
+    )
+
+    for field_name in field_names:
+        # Remove our attributes, if present. They'll still be
+        # available in _MARKER.
+        cls_dict.pop(field_name, None)
+
+    # Remove __dict__ itself.
+    cls_dict.pop('__dict__', None)
+
+    # Clear existing __weakref__ descriptor, it belongs to a previous type.
+    cls_dict.pop('__weakref__', None)
+
+    # And finally create the class.
+    qualname = getattr(cls, '__qualname__', None)
+    cls = type(cls)(cls.__name__, cls.__bases__, cls_dict)
+    if qualname is not None:
+        cls.__qualname__ = qualname
+
+    if is_frozen:
+        # Need this for pickling frozen classes with slots.
+        if '__getstate__' not in cls_dict:
+            cls.__getstate__ = _dataclass_getstate
+        if '__setstate__' not in cls_dict:
+            cls.__setstate__ = _dataclass_setstate
+
+    return cls
+
+
 def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen,
-                   match_args, kw_only):
+                   match_args, kw_only, slots=False, weakref_slot=False):
     # Now that dicts retain insertion order, there's no reason to use
     # an ordered dict.  I am leveraging that ordering here, because
     # derived class fields overwrite base class fields, but the order
@@ -845,7 +942,8 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen,
 
     setattr(cls, _PARAMS, _DataclassParams(init, repr, eq, order,
                                            unsafe_hash, frozen,
-                                           match_args, kw_only))
+                                           match_args, kw_only,
+                                           slots, weakref_slot))
 
     # Find our base classes in reverse MRO order, and exclude
     # ourselves.  In reversed order so that more derived classes
@@ -979,6 +1077,7 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen,
                                     # if possible.
                                     '__dataclass_self__' if 'self' in fields
                                             else 'self',
+                                    slots,
                           ))
 
     # Set __match_args__ if match_args is true and __init__ is being
@@ -1038,6 +1137,11 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen,
         cls.__doc__ = (cls.__name__ +
                        str(inspect.signature(cls)).replace(' -> None', ''))
 
+    if slots:
+        cls = _add_slots(cls, frozen, weakref_slot)
+    elif weakref_slot:
+        raise TypeError('weakref_slot requires slots=True')
+
     return cls
 
 
@@ -1045,7 +1149,8 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen,
 # underscore.  The presence of _cls is used to detect if this
 # decorator is being called with parameters or not.
 def dataclass(_cls=None, *, init=True, repr=True, eq=True, order=False,
-              unsafe_hash=False, frozen=False, match_args=True, kw_only=False):
+              unsafe_hash=False, frozen=False, match_args=True,
+              kw_only=False, slots=False, weakref_slot=False):
     """Returns the same class as was passed in, with dunder methods
     added based on the fields defined in the class.
 
@@ -1061,7 +1166,8 @@ def dataclass(_cls=None, *, init=True, repr=True, eq=True, order=False,
 
     def wrap(cls):
         return _process_class(cls, init, repr, eq, order, unsafe_hash,
-                              frozen, match_args, kw_only)
+                              frozen, match_args, kw_only, slots,
+                              weakref_slot)
 
     # See if we're being called as @dataclass or @dataclass().
     if _cls is None:
@@ -1184,7 +1290,8 @@ def _astuple_inner(obj, tuple_factory):
 
 def make_dataclass(cls_name, fields, *, bases=(), namespace=None, init=True,
                    repr=True, eq=True, order=False, unsafe_hash=False,
-                   frozen=False, match_args=True, kw_only=False):
+                   frozen=False, match_args=True, kw_only=False,
+                   slots=False, weakref_slot=False):
     """Return a new dynamically created dataclass.
 
     The dataclass name will be 'cls_name'.  'fields' is an iterable
@@ -1246,7 +1353,8 @@ def make_dataclass(cls_name, fields, *, bases=(), namespace=None, init=True,
     cls = types.new_class(cls_name, bases, {}, lambda ns: ns.update(namespace))
     return dataclass(cls, init=init, repr=repr, eq=eq, order=order,
                      unsafe_hash=unsafe_hash, frozen=frozen,
-                     match_args=match_args, kw_only=kw_only)
+                     match_args=match_args, kw_only=kw_only,
+                     slots=slots, weakref_slot=weakref_slot)
 
 
 def replace(obj, **changes):
