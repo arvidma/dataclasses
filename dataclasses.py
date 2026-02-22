@@ -4,6 +4,7 @@ import copy
 import types
 import inspect
 import keyword
+from reprlib import recursive_repr
 
 __all__ = ['dataclass',
            'field',
@@ -249,6 +250,7 @@ class Field:
                          types.MappingProxyType(metadata))
         self._field_type = None
 
+    @recursive_repr()
     def __repr__(self):
         return ('Field('
                 f'name={self.name!r},'
@@ -500,12 +502,13 @@ def _init_fn(fields, frozen, has_post_init, self_name):
 
 
 def _repr_fn(fields):
-    return _create_fn('__repr__',
-                      ('self',),
-                      ['return self.__class__.__qualname__ + f"(' +
-                       ', '.join([f"{f.name}={{self.{f.name}!r}}"
-                                  for f in fields]) +
-                       ')"'])
+    fn = _create_fn('__repr__',
+                    ('self',),
+                    ['return self.__class__.__qualname__ + f"(' +
+                     ', '.join([f"{f.name}={{self.{f.name}!r}}"
+                                for f in fields]) +
+                     ')"'])
+    return recursive_repr()(fn)
 
 
 def _frozen_get_del_attr(cls, fields):
@@ -544,6 +547,20 @@ def _cmp_fn(name, op, self_tuple, other_tuple):
                       [ 'if other.__class__ is self.__class__:',
                        f' return {self_tuple}{op}{other_tuple}',
                         'return NotImplemented'])
+
+
+def _eq_fn(fields):
+    # Build an __eq__ that compares field-by-field with a
+    # self-identity short-circuit.
+    if fields:
+        terms = ' and '.join([f'self.{f.name}==other.{f.name}'
+                              for f in fields])
+    else:
+        terms = 'True'
+    body = ['if other.__class__ is self.__class__:',
+            f' return self is other or ({terms})',
+            'return NotImplemented']
+    return _create_fn('__eq__', ('self', 'other'), body)
 
 
 def _hash_fn(fields):
@@ -893,14 +910,10 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen):
         _set_new_attribute(cls, '__repr__', _repr_fn(flds))
 
     if eq:
-        # Create _eq__ method.  There's no need for a __ne__ method,
+        # Create __eq__ method.  There's no need for a __ne__ method,
         # since python will call __eq__ and negate it.
         flds = [f for f in field_list if f.compare]
-        self_tuple = _tuple_str('self', flds)
-        other_tuple = _tuple_str('other', flds)
-        _set_new_attribute(cls, '__eq__',
-                           _cmp_fn('__eq__', '==',
-                                   self_tuple, other_tuple))
+        _set_new_attribute(cls, '__eq__', _eq_fn(flds))
 
     if order:
         # Create and set the ordering methods.
