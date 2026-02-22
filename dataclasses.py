@@ -11,6 +11,7 @@ __all__ = ['dataclass',
            'Field',
            'FrozenInstanceError',
            'InitVar',
+           'KW_ONLY',
            'MISSING',
 
            # Helper functions.
@@ -196,6 +197,11 @@ _POST_INIT_NAME = '__post_init__'
 # https://bugs.python.org/issue33453 for details.
 _MODULE_IDENTIFIER_RE = re.compile(r'^(?:\s*(\w+)\s*\.)?\s*(\w+)')
 
+class _KW_ONLY_TYPE:
+    pass
+KW_ONLY = _KW_ONLY_TYPE()
+
+
 class _InitVarMeta(type):
     def __getitem__(cls, tp):
         return InitVar(tp)
@@ -232,11 +238,12 @@ class Field:
                  'init',
                  'compare',
                  'metadata',
+                 'kw_only',
                  '_field_type',  # Private: not to be used by user code.
                  )
 
     def __init__(self, default, default_factory, init, repr, hash, compare,
-                 metadata):
+                 metadata, kw_only):
         self.name = None
         self.type = None
         self.default = default
@@ -248,6 +255,7 @@ class Field:
         self.metadata = (_EMPTY_METADATA
                          if metadata is None or len(metadata) == 0 else
                          types.MappingProxyType(metadata))
+        self.kw_only = kw_only
         self._field_type = None
 
     @recursive_repr()
@@ -262,6 +270,7 @@ class Field:
                 f'hash={self.hash!r},'
                 f'compare={self.compare!r},'
                 f'metadata={self.metadata!r},'
+                f'kw_only={self.kw_only!r},'
                 f'_field_type={self._field_type}'
                 ')')
 
@@ -288,15 +297,17 @@ class _DataclassParams:
                  'order',
                  'unsafe_hash',
                  'frozen',
+                 'kw_only',
                  )
 
-    def __init__(self, init, repr, eq, order, unsafe_hash, frozen):
+    def __init__(self, init, repr, eq, order, unsafe_hash, frozen, kw_only):
         self.init = init
         self.repr = repr
         self.eq = eq
         self.order = order
         self.unsafe_hash = unsafe_hash
         self.frozen = frozen
+        self.kw_only = kw_only
 
     def __repr__(self):
         return ('_DataclassParams('
@@ -305,7 +316,8 @@ class _DataclassParams:
                 f'eq={self.eq!r},'
                 f'order={self.order!r},'
                 f'unsafe_hash={self.unsafe_hash!r},'
-                f'frozen={self.frozen!r}'
+                f'frozen={self.frozen!r},'
+                f'kw_only={self.kw_only!r}'
                 ')')
 
 
@@ -313,7 +325,7 @@ class _DataclassParams:
 # so that a type checker can be told (via overloads) that this is a
 # function whose type depends on its parameters.
 def field(*, default=MISSING, default_factory=MISSING, init=True, repr=True,
-          hash=None, compare=True, metadata=None):
+          hash=None, compare=True, metadata=None, kw_only=MISSING):
     """Return an object to identify dataclass fields.
 
     default is the default value of the field.  default_factory is a
@@ -324,6 +336,8 @@ def field(*, default=MISSING, default_factory=MISSING, init=True, repr=True,
     the object's hash().  If compare is True, the field will be used
     in comparison functions.  metadata, if specified, must be a
     mapping which is stored but not otherwise examined by dataclass.
+    If kw_only is true, the field will become a keyword-only parameter
+    to __init__().
 
     It is an error to specify both default and default_factory.
     """
@@ -331,7 +345,7 @@ def field(*, default=MISSING, default_factory=MISSING, init=True, repr=True,
     if default is not MISSING and default_factory is not MISSING:
         raise ValueError('cannot specify both default and default_factory')
     return Field(default, default_factory, init, repr, hash, compare,
-                 metadata)
+                 metadata, kw_only)
 
 
 def _tuple_str(obj_name, fields):
@@ -452,7 +466,15 @@ def _init_param(f):
     return f'{f.name}:__dataclass_type_{f.name}__{default}'
 
 
-def _init_fn(fields, frozen, has_post_init, self_name):
+def _fields_in_init_order(fields):
+    # Returns a tuple of (std_fields, kw_only_fields).
+    # std_fields are fields with init=True that are not kw_only.
+    # kw_only_fields are fields with init=True that are kw_only.
+    return (tuple(f for f in fields if f.init and not f.kw_only),
+            tuple(f for f in fields if f.init and f.kw_only))
+
+
+def _init_fn(fields, std_fields, kw_only_fields, frozen, has_post_init, self_name):
     # fields contains both real fields and InitVar pseudo-fields.
 
     # Make sure we don't have fields without defaults following fields
@@ -461,8 +483,8 @@ def _init_fn(fields, frozen, has_post_init, self_name):
     # message, and future-proofs us in case we build up the function
     # using ast.
     seen_default = False
-    for f in fields:
-        # Only consider fields in the __init__ call.
+    for f in std_fields:
+        # Only consider the non-kw-only fields in the __init__ call.
         if f.init:
             if not (f.default is MISSING and f.default_factory is MISSING):
                 seen_default = True
@@ -493,8 +515,16 @@ def _init_fn(fields, frozen, has_post_init, self_name):
         body_lines = ['pass']
 
     locals = {f'__dataclass_type_{f.name}__': f.type for f in fields}
+
+    # Build the parameter list: std fields first, then kw_only fields
+    # after a '*' separator.
+    _init_params = [_init_param(f) for f in std_fields]
+    if kw_only_fields:
+        _init_params += ['*']
+        _init_params += [_init_param(f) for f in kw_only_fields]
+
     return _create_fn('__init__',
-                      [self_name] + [_init_param(f) for f in fields if f.init],
+                      [self_name] + _init_params,
                       body_lines,
                       locals=locals,
                       globals=globals,
@@ -576,6 +606,10 @@ def _is_classvar(a_type, typing):
     return type(a_type) is typing._ClassVar
 
 
+def _is_kw_only(a_type, dataclasses):
+    return a_type is dataclasses.KW_ONLY
+
+
 def _is_initvar(a_type, dataclasses):
     # The module we're checking against is the module we're
     # currently in (dataclasses.py).
@@ -642,10 +676,12 @@ def _is_type(annotation, cls, a_module, a_type, is_type_predicate):
     return False
 
 
-def _get_field(cls, a_name, a_type):
+def _get_field(cls, a_name, a_type, default_kw_only):
     # Return a Field object for this field name and type.  ClassVars
     # and InitVars are also returned, but marked as such (see
     # f._field_type).
+    # default_kw_only is the value of kw_only to use if there isn't a
+    # field() that defines it.
 
     # If the default value isn't derived from Field, then it's only a
     # normal default value.  Convert it to a Field().
@@ -719,6 +755,18 @@ def _get_field(cls, a_name, a_type):
         # init=<not-the-default-init-value>)?  It makes no sense for
         # ClassVar and InitVar to specify init=<anything>.
 
+    # kw_only validation and assignment.
+    if f._field_type in (_FIELD, _FIELD_INITVAR):
+        # For real and InitVar fields, if kw_only wasn't specified use the
+        # default value.
+        if f.kw_only is MISSING:
+            f.kw_only = default_kw_only
+    else:
+        # Make sure kw_only isn't set for ClassVars
+        if f.kw_only is not MISSING:
+            raise TypeError(f'field {f.name} is a ClassVar but specifies '
+                            'kw_only')
+
     # For real fields, disallow mutable defaults for known types.
     if f._field_type is _FIELD and f.default.__class__.__hash__ is None:
         raise ValueError(f'mutable default {type(f.default)} for field '
@@ -783,7 +831,7 @@ _hash_action = {(False, False, False, False): None,
 # version of this table.
 
 
-def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen):
+def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen, kw_only):
     # Now that dicts retain insertion order, there's no reason to use
     # an ordered dict.  I am leveraging that ordering here, because
     # derived class fields overwrite base class fields, but the order
@@ -791,7 +839,7 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen):
     fields = {}
 
     setattr(cls, _PARAMS, _DataclassParams(init, repr, eq, order,
-                                           unsafe_hash, frozen))
+                                           unsafe_hash, frozen, kw_only))
 
     # Find our base classes in reverse MRO order, and exclude
     # ourselves.  In reversed order so that more derived classes
@@ -827,8 +875,27 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen):
     # Now find fields in our class.  While doing so, validate some
     # things, and set the default values (as class attributes) where
     # we can.
-    cls_fields = [_get_field(cls, name, type)
-                  for name, type in cls_annotations.items()]
+    cls_fields = []
+    # Get a reference to this module for the _is_kw_only() test.
+    KW_ONLY_seen = False
+    dataclasses = sys.modules[__name__]
+    for name, type in cls_annotations.items():
+        # See if this is a marker to change the value of kw_only.
+        if (_is_kw_only(type, dataclasses)
+            or (isinstance(type, str)
+                and _is_type(type, cls, dataclasses, dataclasses.KW_ONLY,
+                             _is_kw_only))):
+            # Switch the default to kw_only=True, and ignore this
+            # annotation: it's not a real field.
+            if KW_ONLY_seen:
+                raise TypeError(f'{name!r} is KW_ONLY, but KW_ONLY '
+                                'has already been specified')
+            KW_ONLY_seen = True
+            kw_only = True
+        else:
+            # Otherwise it's a field of some type.
+            cls_fields.append(_get_field(cls, name, type, kw_only))
+
     for f in cls_fields:
         fields[f.name] = f
 
@@ -883,15 +950,22 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen):
     if order and not eq:
         raise ValueError('eq must be true if order is true')
 
+    # Include InitVars and regular fields (so, not ClassVars).  This is
+    # initialized here, outside of the "if init:" test, because
+    # std_init_fields is used with match_args, below.
+    all_init_fields = [f for f in fields.values()
+                       if f._field_type in (_FIELD, _FIELD_INITVAR)]
+    (std_init_fields,
+     kw_only_init_fields) = _fields_in_init_order(all_init_fields)
+
     if init:
         # Does this class have a post-init function?
         has_post_init = hasattr(cls, _POST_INIT_NAME)
 
-        # Include InitVars and regular fields (so, not ClassVars).
-        flds = [f for f in fields.values()
-                if f._field_type in (_FIELD, _FIELD_INITVAR)]
         _set_new_attribute(cls, '__init__',
-                           _init_fn(flds,
+                           _init_fn(all_init_fields,
+                                    std_init_fields,
+                                    kw_only_init_fields,
                                     frozen,
                                     has_post_init,
                                     # The name to use for the "self"
@@ -959,7 +1033,7 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen):
 # underscore.  The presence of _cls is used to detect if this
 # decorator is being called with parameters or not.
 def dataclass(_cls=None, *, init=True, repr=True, eq=True, order=False,
-              unsafe_hash=False, frozen=False):
+              unsafe_hash=False, frozen=False, kw_only=False):
     """Returns the same class as was passed in, with dunder methods
     added based on the fields defined in the class.
 
@@ -969,11 +1043,13 @@ def dataclass(_cls=None, *, init=True, repr=True, eq=True, order=False,
     repr is true, a __repr__() method is added. If order is true, rich
     comparison dunder methods are added. If unsafe_hash is true, a
     __hash__() method function is added. If frozen is true, fields may
-    not be assigned to after instance creation.
+    not be assigned to after instance creation. If kw_only is true, then
+    by default all fields are keyword-only.
     """
 
     def wrap(cls):
-        return _process_class(cls, init, repr, eq, order, unsafe_hash, frozen)
+        return _process_class(cls, init, repr, eq, order, unsafe_hash,
+                              frozen, kw_only)
 
     # See if we're being called as @dataclass or @dataclass().
     if _cls is None:
@@ -1096,7 +1172,7 @@ def _astuple_inner(obj, tuple_factory):
 
 def make_dataclass(cls_name, fields, *, bases=(), namespace=None, init=True,
                    repr=True, eq=True, order=False, unsafe_hash=False,
-                   frozen=False):
+                   frozen=False, kw_only=False):
     """Return a new dynamically created dataclass.
 
     The dataclass name will be 'cls_name'.  'fields' is an iterable
@@ -1157,7 +1233,7 @@ def make_dataclass(cls_name, fields, *, bases=(), namespace=None, init=True,
     # of generic dataclassses.
     cls = types.new_class(cls_name, bases, {}, lambda ns: ns.update(namespace))
     return dataclass(cls, init=init, repr=repr, eq=eq, order=order,
-                     unsafe_hash=unsafe_hash, frozen=frozen)
+                     unsafe_hash=unsafe_hash, frozen=frozen, kw_only=kw_only)
 
 
 def replace(obj, **changes):
