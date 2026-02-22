@@ -196,11 +196,19 @@ _POST_INIT_NAME = '__post_init__'
 _MODULE_IDENTIFIER_RE = re.compile(r'^(?:\s*(\w+)\s*\.)?\s*(\w+)')
 
 class _InitVarMeta(type):
-    def __getitem__(self, params):
-        return self
+    def __getitem__(cls, tp):
+        return InitVar(tp)
 
 class InitVar(metaclass=_InitVarMeta):
-    pass
+    __slots__ = ('type',)
+    def __init__(self, tp):
+        self.type = tp
+    def __repr__(self):
+        if isinstance(self.type, type) and not isinstance(self.type, InitVar):
+            type_name = self.type.__qualname__
+        else:
+            type_name = repr(self.type)
+        return f'dataclasses.InitVar[{type_name}]'
 
 
 # Instances of Field are only ever created from within this module,
@@ -553,7 +561,8 @@ def _is_classvar(a_type, typing):
 def _is_initvar(a_type, dataclasses):
     # The module we're checking against is the module we're
     # currently in (dataclasses.py).
-    return a_type is dataclasses.InitVar
+    return (a_type is dataclasses.InitVar
+            or type(a_type) is dataclasses.InitVar)
 
 
 def _is_type(annotation, cls, a_module, a_type, is_type_predicate):
@@ -673,6 +682,9 @@ def _get_field(cls, a_name, a_type):
                 and _is_type(f.type, cls, dataclasses, dataclasses.InitVar,
                              _is_initvar))):
             f._field_type = _FIELD_INITVAR
+            # If the type is InitVar[T], extract the inner type.
+            if f._field_type is _FIELD_INITVAR and type(a_type) is InitVar:
+                f.type = a_type.type
 
     # Validations for individual fields.  This is delayed until now,
     # instead of in the Field() constructor, since only here do we
