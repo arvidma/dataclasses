@@ -417,23 +417,28 @@ def _tuple_str(obj_name, fields):
 
 
 def _create_fn(name, args, body, *, globals=None, locals=None, return_type=MISSING):
-    # Note that we mutate locals when exec() is called.  Caller
-    # beware!  The only callers are internal to this module, so no
-    # worries about external callers.
+    # Note that we may mutate locals.  Caller beware!  The only
+    # callers are internal to this module, so no worries about
+    # external callers.
     if locals is None:
         locals = {}
     return_annotation = ""
     if return_type is not MISSING:
-        locals["_return_type"] = return_type
-        return_annotation = "->_return_type"
+        locals["__dataclass_return_type__"] = return_type
+        return_annotation = "->__dataclass_return_type__"
     args = ",".join(args)
-    body = "\n".join(f" {b}" for b in body)
+    body = "\n".join(f"  {b}" for b in body)
 
-    # Compute the text of the entire function.
-    txt = f"def {name}({args}){return_annotation}:\n{body}"
+    # Compute the text of the entire function, wrapped in a closure
+    # so that the generated function closes over the local variables
+    # properly (rather than sharing a mutable locals dict).
+    txt = f" def {name}({args}){return_annotation}:\n{body}"
+    local_vars = ", ".join(locals.keys())
+    txt = f"def __create_fn__({local_vars}):\n{txt}\n return {name}"
 
-    exec(txt, globals, locals)
-    return locals[name]
+    ns = {}
+    exec(txt, globals, ns)
+    return ns["__create_fn__"](**locals)
 
 
 def _field_assign(frozen, name, value, self_name):
