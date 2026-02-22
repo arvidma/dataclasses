@@ -1291,7 +1291,7 @@ def _astuple_inner(obj, tuple_factory):
 def make_dataclass(cls_name, fields, *, bases=(), namespace=None, init=True,
                    repr=True, eq=True, order=False, unsafe_hash=False,
                    frozen=False, match_args=True, kw_only=False,
-                   slots=False, weakref_slot=False):
+                   slots=False, weakref_slot=False, decorator=None):
     """Return a new dynamically created dataclass.
 
     The dataclass name will be 'cls_name'.  'fields' is an iterable
@@ -1311,8 +1311,9 @@ def make_dataclass(cls_name, fields, *, bases=(), namespace=None, init=True,
 
     For the bases and namespace parameters, see the builtin type() function.
 
-    The parameters init, repr, eq, order, unsafe_hash, and frozen are passed to
-    dataclass().
+    The parameters init, repr, eq, order, unsafe_hash, frozen, match_args,
+    kw_only, slots, and weakref_slot are passed to dataclass().  If decorator
+    is given, it is used instead of the default dataclass() decorator.
     """
 
     if namespace is None:
@@ -1351,10 +1352,12 @@ def make_dataclass(cls_name, fields, *, bases=(), namespace=None, init=True,
     # We use `types.new_class()` instead of simply `type()` to allow dynamic creation
     # of generic dataclassses.
     cls = types.new_class(cls_name, bases, {}, lambda ns: ns.update(namespace))
-    return dataclass(cls, init=init, repr=repr, eq=eq, order=order,
-                     unsafe_hash=unsafe_hash, frozen=frozen,
-                     match_args=match_args, kw_only=kw_only,
-                     slots=slots, weakref_slot=weakref_slot)
+    if decorator is None:
+        return dataclass(cls, init=init, repr=repr, eq=eq, order=order,
+                         unsafe_hash=unsafe_hash, frozen=frozen,
+                         match_args=match_args, kw_only=kw_only,
+                         slots=slots, weakref_slot=weakref_slot)
+    return decorator(cls)
 
 
 def replace(obj, **changes):
