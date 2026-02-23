@@ -1565,9 +1565,7 @@ def replace(obj, **changes):
 
         if f.name not in changes:
             if f._field_type is _FIELD_INITVAR and f.default is MISSING:
-                raise ValueError(
-                    f"InitVar {f.name!r} must be specified with replace()"
-                )
+                raise ValueError(f"InitVar {f.name!r} must be specified with replace()")
             changes[f.name] = getattr(obj, f.name)
 
     # Create the new object, which calls __init__() and
