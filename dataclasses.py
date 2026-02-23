@@ -828,8 +828,10 @@ def _get_field(cls, a_name, a_type, default_kw_only):
             and _is_type(f.type, cls, dataclasses, dataclasses.InitVar, _is_initvar)
         ):
             f._field_type = _FIELD_INITVAR
-            # If the type is InitVar[T], extract the inner type.
-            if f._field_type is _FIELD_INITVAR and type(a_type) is InitVar:
+            # If the type is InitVar[T], extract the inner type so that
+            # f.type is T rather than InitVar[T].  This matches CPython
+            # 3.12+ behavior (not 3.8 which kept the InitVar wrapper).
+            if type(a_type) is InitVar:
                 f.type = a_type.type
 
     # Validations for individual fields.  This is delayed until now,
