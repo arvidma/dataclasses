@@ -675,14 +675,17 @@ def _cmp_fn(name, op, self_tuple, other_tuple):
 
 def _eq_fn(fields):
     # Build an __eq__ that compares field-by-field with a
-    # self-identity short-circuit.
+    # self-identity short-circuit (checked before the class check
+    # to avoid unnecessary work).  Matches CPython 3.13 (gh-109870).
     if fields:
         terms = " and ".join([f"self.{f.name}==other.{f.name}" for f in fields])
     else:
         terms = "True"
     body = [
+        "if self is other:",
+        " return True",
         "if other.__class__ is self.__class__:",
-        f" return self is other or ({terms})",
+        f" return {terms}",
         "return NotImplemented",
     ]
     return _create_fn("__eq__", ("self", "other"), body)
