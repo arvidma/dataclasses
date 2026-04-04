@@ -1,7 +1,14 @@
 """Tests for dataclasses.py — pure Python, no test framework."""
 
-import sys
+import io
 import os
+import pickle
+import sys
+import traceback
+import typing
+import weakref
+from collections import OrderedDict, namedtuple
+from copy import deepcopy
 
 if sys.version_info[:2] != (3, 6):
     print(
@@ -12,18 +19,18 @@ if sys.version_info[:2] != (3, 6):
 # Ensure we import from the current directory, not stdlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dataclasses import (
+    KW_ONLY,
+    MISSING,
+    FrozenInstanceError,
+    InitVar,
+    asdict,
+    astuple,
     dataclass,
     field,
     fields,
-    asdict,
-    astuple,
+    is_dataclass,
     make_dataclass,
     replace,
-    is_dataclass,
-    FrozenInstanceError,
-    InitVar,
-    KW_ONLY,
-    MISSING,
 )
 
 passed = 0
@@ -317,9 +324,6 @@ check("InitVar default", WithInitVar(5).x == 5)
 section("ClassVar")
 # ============================================================
 
-import typing
-
-
 @dataclass
 class WithClassVar:
     x: int
@@ -390,8 +394,6 @@ check("asdict nested", d["inner"] == {"value": 42})
 check("asdict nested is dict", isinstance(d["inner"], dict))
 
 # With custom dict_factory
-from collections import OrderedDict
-
 od = asdict(o, dict_factory=OrderedDict)
 check("asdict dict_factory", isinstance(od, OrderedDict))
 
@@ -782,9 +784,6 @@ check("replace with InitVar default", ivr2.x == 3)
 section("weakref_slot")
 # ============================================================
 
-import weakref
-
-
 @dataclass(slots=True, weakref_slot=True)
 class WeakRefable:
     x: int
@@ -806,9 +805,6 @@ check_raises(
 # ============================================================
 section("Pickling frozen+slots")
 # ============================================================
-
-import pickle
-
 
 @dataclass(frozen=True, slots=True)
 class Picklable:
@@ -960,9 +956,6 @@ check("recursive eq doesn't crash", req == req)
 # ============================================================
 section("Frozen deepcopy")
 # ============================================================
-
-from copy import deepcopy
-
 
 @dataclass(frozen=True, slots=False)
 class FrozenDeepCopyNoSlots:
@@ -1411,9 +1404,6 @@ check("is_dataclass rejects fake __dataclass_fields__", not is_dataclass(fdc_obj
 section("asdict with tuple_factory-like nested containers")
 # ============================================================
 
-from collections import namedtuple
-
-
 @dataclass
 class AsDictUser:
     name: str
@@ -1776,15 +1766,11 @@ section("fields() on non-dataclass raises TypeError")
 check_raises("fields(0) raises", TypeError, lambda: fields(0))
 check_raises("fields(int) raises", TypeError, lambda: fields(int))
 
-# Also verify the traceback is clean (no AttributeError leaking through)
-import traceback as _tb
-import io as _io
-
-_stdout = _io.StringIO()
+_stdout = io.StringIO()
 try:
     fields(object)
 except TypeError as exc:
-    _tb.print_exception(type(exc), exc, exc.__traceback__, file=_stdout)
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=_stdout)
 
 _printed = _stdout.getvalue()
 check("fields() clean traceback", "AttributeError" not in _printed)

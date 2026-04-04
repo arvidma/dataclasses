@@ -1,12 +1,12 @@
+import copy
+import inspect
+import itertools
+import keyword
 import re
 import sys
-import copy
 import types
-import inspect
-import keyword
-import itertools
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 from reprlib import recursive_repr
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 __all__ = [
     "dataclass",
