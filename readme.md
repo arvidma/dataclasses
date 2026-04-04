@@ -1,9 +1,9 @@
 # Backports of Python dataclass features of 3.8+ to 3.6
 
 Adds most dataclass features from Python versions after 3.7 to the excellent but long-since 
-abondoned backport by Eric V. Smith (https://github.com/ericvsmith/dataclasses/).
+abandoned backport by Eric V. Smith (https://github.com/ericvsmith/dataclasses/).
 
-For those of us still stuck writing Python for systems tied hard to the the oldest LTS releases 
+For those of us still stuck writing Python for systems tied hard to the oldest LTS releases 
 of Ubuntu and RedHat.
 
 Matrix of backported and not-yet-backported features:
@@ -24,10 +24,15 @@ Matrix of backported and not-yet-backported features:
 ## Usage
 
 Drop the single `dataclasses.py` file into your project (vendoring), or add it to
-your Python path. It is a drop-in replacement for the standard library module:
+your Python path. It is a drop-in replacement for the standard library module and
+can transparently replace the stdlib if running on a Python version that doesn't
+support some feature you like.
 
 ```python
-from dataclasses import dataclass, field, KW_ONLY
+try:
+    from dataclasses import dataclass, field, KW_ONLY
+except ImportError:
+    from myproj.vendor.dataclasses import dataclass, field, KW_ONLY  # type: ignore[no-redef]
 
 @dataclass(slots=True, kw_only=True)
 class Point:
