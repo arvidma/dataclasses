@@ -472,7 +472,9 @@ def _field_assign(frozen: bool, name: str, value: str, self_name: str) -> str:
     return f"{self_name}.{name}={value}"
 
 
-def _field_init(f: Field, frozen: bool, globals: Dict[str, Any], self_name: str, slots: bool) -> Optional[str]:
+def _field_init(
+    f: Field, frozen: bool, globals: Dict[str, Any], self_name: str, slots: bool
+) -> Optional[str]:
     # Return the text of the line in the body of __init__ that will
     # initialize this field.
 
@@ -554,7 +556,9 @@ def _init_param(f: Field) -> str:
     return f"{f.name}:__dataclass_type_{f.name}__{default}"
 
 
-def _fields_in_init_order(fields: List[Field]) -> Tuple[Tuple[Field, ...], Tuple[Field, ...]]:
+def _fields_in_init_order(
+    fields: List[Field],
+) -> Tuple[Tuple[Field, ...], Tuple[Field, ...]]:
     # Returns a tuple of (std_fields, kw_only_fields).
     # std_fields are fields with init=True that are not kw_only.
     # kw_only_fields are fields with init=True that are kw_only.
@@ -735,7 +739,13 @@ def _is_initvar(a_type: Any, dataclasses: Any) -> bool:
     return a_type is dataclasses.InitVar or type(a_type) is dataclasses.InitVar
 
 
-def _is_type(annotation: str, cls: type, a_module: Any, a_type: Any, is_type_predicate: Callable[..., bool]) -> bool:
+def _is_type(
+    annotation: str,
+    cls: type,
+    a_module: Any,
+    a_type: Any,
+    is_type_predicate: Callable[..., bool],
+) -> bool:
     # Given a type annotation string, does it refer to a_type in
     # a_module?  For example, when checking that annotation denotes a
     # ClassVar, then a_module is typing, and a_type is

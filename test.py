@@ -877,6 +877,996 @@ check("doc contains class name", "Documented" in Documented.__doc__)
 
 
 # ============================================================
+section("Field named 'object'")
+# ============================================================
+
+
+@dataclass
+class FieldNamedObject:
+    object: str
+
+
+fno = FieldNamedObject("foo")
+check("field named object works", fno.object == "foo")
+
+
+@dataclass(frozen=True)
+class FieldNamedObjectFrozen:
+    object: str
+
+
+fnof = FieldNamedObjectFrozen("bar")
+check("field named object frozen works", fnof.object == "bar")
+
+
+# ============================================================
+section("Field named 'BUILTINS' (frozen)")
+# ============================================================
+
+
+# gh-96151: field named BUILTINS should work in frozen dataclasses
+@dataclass(frozen=True)
+class FieldNamedBUILTINS:
+    BUILTINS: int
+
+
+fnb = FieldNamedBUILTINS(5)
+check("BUILTINS field frozen works", fnb.BUILTINS == 5)
+
+
+# ============================================================
+section("Field with special underscore names")
+# ============================================================
+
+# gh-98886: fields with names like _dflt_<field> or _HAS_DEFAULT_FACTORY
+# could clash with internal generated code
+
+
+@dataclass
+class SpecialUnderscoreX:
+    x: int = field(default_factory=lambda: 111)
+    _dflt_x: int = field(default_factory=lambda: 222)
+
+
+sux = SpecialUnderscoreX()
+check("_dflt_x field default works", sux.x == 111 and sux._dflt_x == 222)
+
+
+@dataclass
+class SpecialUnderscoreY:
+    y: int = field(default_factory=lambda: 111)
+    _HAS_DEFAULT_FACTORY: int = 222
+
+
+suy = SpecialUnderscoreY(y=222)
+check("_HAS_DEFAULT_FACTORY field works", suy.y == 222)
+
+
+# ============================================================
+section("Recursive eq")
+# ============================================================
+
+
+@dataclass
+class RecEq:
+    recursive: object = ...
+
+
+req = RecEq()
+req.recursive = req
+check("recursive eq doesn't crash", req == req)
+
+
+# ============================================================
+section("Frozen deepcopy")
+# ============================================================
+
+from copy import deepcopy
+
+
+@dataclass(frozen=True, slots=False)
+class FrozenDeepCopyNoSlots:
+    s: str
+
+
+fdc = FrozenDeepCopyNoSlots("hello")
+check("frozen deepcopy without slots", deepcopy(fdc) == fdc)
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenDeepCopyWithSlots:
+    s: str
+
+
+fdcs = FrozenDeepCopyWithSlots("hello")
+check("frozen deepcopy with slots", deepcopy(fdcs) == fdcs)
+
+
+# ============================================================
+section("Slots with default no init")
+# ============================================================
+
+# bpo-44649: slots + default + init=False
+
+
+@dataclass(slots=True)
+class SlotsDefaultNoInit:
+    a: str
+    b: str = field(default="b", init=False)
+
+
+sdni = SlotsDefaultNoInit("a")
+check("slots default no init", sdni.a == "a" and sdni.b == "b")
+
+
+@dataclass(slots=True)
+class SlotsFactoryNoInit:
+    a: str
+    b: str = field(default_factory=lambda: "b", init=False)
+
+
+sfni = SlotsFactoryNoInit("a")
+check("slots factory no init", sfni.a == "a" and sfni.b == "b")
+
+
+# ============================================================
+section("Slots no weakref without weakref_slot")
+# ============================================================
+
+
+@dataclass(slots=True)
+class SlotsNoWeakref:
+    x: int
+
+
+check("__weakref__ not in slots", "__weakref__" not in SlotsNoWeakref.__slots__)
+check_raises(
+    "slots without weakref_slot rejects weakref",
+    TypeError,
+    lambda: weakref.ref(SlotsNoWeakref(1)),
+)
+
+
+# ============================================================
+section("Frozen+slots pickle with custom __getstate__/__setstate__")
+# ============================================================
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenSlotsCustomState:
+    foo: str
+    bar: int
+    getstate_called: bool = field(default=False, compare=False)
+    setstate_called: bool = field(default=False, compare=False)
+
+    def __getstate__(self):
+        object.__setattr__(self, "getstate_called", True)
+        return [self.foo, self.bar]
+
+    def __setstate__(self, state):
+        object.__setattr__(self, "setstate_called", True)
+        object.__setattr__(self, "foo", state[0])
+        object.__setattr__(self, "bar", state[1])
+
+
+fscs = FrozenSlotsCustomState("a", 1)
+fscs2 = pickle.loads(pickle.dumps(fscs))
+check("custom getstate called", fscs.getstate_called)
+check("custom setstate called", fscs2.setstate_called)
+check("custom state pickle roundtrip", fscs == fscs2)
+
+
+# ============================================================
+section("KW_ONLY with field(kw_only=False) override")
+# ============================================================
+
+
+@dataclass
+class KwOnlyOverride:
+    a: int
+    _: KW_ONLY
+    b: int
+    c: int = field(kw_only=False)
+
+
+kwo = KwOnlyOverride(1, 2, b=3)
+check("kw_only override positional c", kwo.a == 1 and kwo.b == 3 and kwo.c == 2)
+kwo2 = KwOnlyOverride(1, b=3, c=2)
+check("kw_only override named c", kwo2.a == 1 and kwo2.b == 3 and kwo2.c == 2)
+
+
+# ============================================================
+section("KW_ONLY twice raises")
+# ============================================================
+
+
+def _make_kw_only_twice():
+    @dataclass
+    class Bad:
+        a: int
+        X: KW_ONLY
+        Y: KW_ONLY
+        b: int
+
+
+check_raises(
+    "KW_ONLY specified twice raises TypeError",
+    TypeError,
+    _make_kw_only_twice,
+)
+
+
+# ============================================================
+section("KW_ONLY defaults after non-defaults ok")
+# ============================================================
+
+
+@dataclass
+class KwOnlyDefaults:
+    a: int = 0
+    _: KW_ONLY
+    b: int = 1
+    c: int = 2
+    d: int = 3
+
+
+kwod = KwOnlyDefaults(d=4, b=3)
+check(
+    "kw_only allows defaults after non-defaults",
+    kwod.a == 0 and kwod.b == 3 and kwod.c == 2 and kwod.d == 4,
+)
+
+# But non-kwarg non-defaults after defaults still fail
+check_raises(
+    "non-kw non-default after default still fails",
+    TypeError,
+    lambda: dataclass(
+        type(
+            "Bad",
+            (),
+            {"__annotations__": {"a": int, "z": int}, "a": 0},
+        )
+    ),
+)
+
+
+# ============================================================
+section("match_args with kw_only")
+# ============================================================
+
+
+@dataclass(kw_only=True)
+class MatchArgsKwOnly:
+    a: int
+
+
+check(
+    "kw_only fields not in __match_args__",
+    MatchArgsKwOnly(a=42).__match_args__ == (),
+)
+
+
+@dataclass
+class MatchArgsMixed:
+    a: int
+    b: int = field(kw_only=True)
+
+
+check(
+    "mixed kw_only match_args",
+    MatchArgsMixed(42, b=10).__match_args__ == ("a",),
+)
+
+
+# ============================================================
+section("Explicit __match_args__ preserved")
+# ============================================================
+
+ma = ()
+
+
+@dataclass
+class ExplicitMatchArgs:
+    a: int
+    __match_args__ = ma
+
+
+check("explicit match_args preserved", ExplicitMatchArgs(42).__match_args__ is ma)
+
+
+# ============================================================
+section("match_args via make_dataclass")
+# ============================================================
+
+MdcMatchArgs = make_dataclass("MdcMatchArgs", [("x", int), ("y", int)])
+check("make_dataclass match_args", MdcMatchArgs.__match_args__ == ("x", "y"))
+
+MdcNoMatchArgs = make_dataclass(
+    "MdcNoMatchArgs", [("x", int), ("y", int)], match_args=False
+)
+check(
+    "make_dataclass match_args=False", "__match_args__" not in MdcNoMatchArgs.__dict__
+)
+
+
+# ============================================================
+section("make_dataclass with namespace")
+# ============================================================
+
+MdcNs = make_dataclass(
+    "MdcNs",
+    [("x", int), ("y", int, field(default=5))],
+    namespace={"add_one": lambda self: self.x + 1},
+)
+mdc_ns = MdcNs(10)
+check("make_dataclass namespace", mdc_ns.x == 10 and mdc_ns.y == 5)
+check("make_dataclass namespace method", mdc_ns.add_one() == 11)
+
+# Provided namespace is not mutated
+ns = {}
+make_dataclass("MdcNsMutate", [("x", int)], namespace=ns)
+check("make_dataclass namespace not mutated", ns == {})
+
+
+# ============================================================
+section("make_dataclass with decorator parameter")
+# ============================================================
+
+
+def custom_dataclass(cls, *args, **kwargs):
+    dc = dataclass(cls, *args, **kwargs)
+    dc.__custom__ = True
+    return dc
+
+
+MdcDecorator = make_dataclass("MdcDecorator", [("x", int)], decorator=custom_dataclass)
+mdc_dec = MdcDecorator(10)
+check("make_dataclass custom decorator", mdc_dec.x == 10)
+check("make_dataclass custom decorator applied", MdcDecorator.__custom__ is True)
+
+# default decorator
+MdcDefaultDec = make_dataclass("MdcDefaultDec", [("x", int)], decorator=dataclass)
+check("make_dataclass default decorator", MdcDefaultDec(10).x == 10)
+
+
+# ============================================================
+section("make_dataclass invalid field specs")
+# ============================================================
+
+check_raises(
+    "make_dataclass empty tuple field",
+    TypeError,
+    lambda: make_dataclass("Bad", ["a", ()]),
+)
+check_raises(
+    "make_dataclass 4-tuple field",
+    TypeError,
+    lambda: make_dataclass("Bad", ["a", (1, 2, 3, 4)]),
+)
+check_raises(
+    "make_dataclass duplicate field names",
+    TypeError,
+    lambda: make_dataclass("Bad", ["a", "a"]),
+)
+check_raises(
+    "make_dataclass keyword field name",
+    TypeError,
+    lambda: make_dataclass("Bad", ["for"]),
+)
+check_raises(
+    "make_dataclass non-identifier field name",
+    TypeError,
+    lambda: make_dataclass("Bad", ["x,y"]),
+)
+
+
+# ============================================================
+section("make_dataclass with kw_only")
+# ============================================================
+
+MdcKw = make_dataclass("MdcKw", ["a"], kw_only=True)
+check("make_dataclass kw_only", fields(MdcKw)[0].kw_only)
+
+MdcKwMixed = make_dataclass(
+    "MdcKwMixed",
+    ["a", ("b", int, field(kw_only=False))],
+    kw_only=True,
+)
+check("make_dataclass kw_only mixed", fields(MdcKwMixed)[0].kw_only)
+check("make_dataclass kw_only mixed override", not fields(MdcKwMixed)[1].kw_only)
+
+
+# ============================================================
+section("replace() with init=False raises TypeError")
+# ============================================================
+
+
+@dataclass
+class ReplaceInitFalse:
+    x: int
+    y: int = field(init=False, default=10)
+
+
+rif = ReplaceInitFalse(1)
+rif.y = 20
+rif2 = replace(rif, x=5)
+check("replace init=False gets default", rif2.x == 5 and rif2.y == 10)
+
+check_raises(
+    "replace init=False field raises",
+    (TypeError, ValueError),
+    lambda: replace(rif, x=2, y=30),
+)
+
+check_raises(
+    "replace only init=False field raises",
+    (TypeError, ValueError),
+    lambda: replace(rif, y=30),
+)
+
+
+# ============================================================
+section("replace() on frozen with init=False")
+# ============================================================
+
+
+@dataclass(frozen=True)
+class FrozenReplaceInitFalse:
+    x: int
+    y: int
+    z: int = field(init=False, default=10)
+    t: int = field(init=False, default=100)
+
+
+frif = FrozenReplaceInitFalse(1, 2)
+frif2 = replace(frif, x=3)
+check("frozen replace values", frif2.x == 3 and frif2.y == 2 and frif2.z == 10)
+
+check_raises(
+    "frozen replace init=False raises",
+    (TypeError, ValueError),
+    lambda: replace(frif, x=3, z=20, t=50),
+)
+
+# Make sure the result is still frozen
+check_raises(
+    "frozen replace result is still frozen",
+    FrozenInstanceError,
+    lambda: setattr(frif2, "x", 99),
+)
+
+# Invalid field name
+check_raises(
+    "replace invalid field name",
+    TypeError,
+    lambda: replace(frif, z_invalid=3),
+)
+
+
+# ============================================================
+section("Non-frozen subclass of frozen")
+# ============================================================
+
+
+@dataclass(frozen=True)
+class FrozenBase:
+    x: int
+    y: int = 10
+
+
+class NonFrozenDerived(FrozenBase):
+    pass
+
+
+nfd = NonFrozenDerived(3)
+check("non-frozen derived init", nfd.x == 3 and nfd.y == 10)
+
+# Can set new mutable attributes
+nfd.cached = True
+check("non-frozen derived mutable attr", nfd.cached is True)
+
+# But can't change frozen attributes
+check_raises(
+    "non-frozen derived frozen attr setattr",
+    FrozenInstanceError,
+    lambda: setattr(nfd, "x", 5),
+)
+check_raises(
+    "non-frozen derived frozen attr delattr",
+    FrozenInstanceError,
+    lambda: delattr(nfd, "x"),
+)
+
+# Can delete mutable attributes
+del nfd.cached
+check("non-frozen derived del mutable attr", not hasattr(nfd, "cached"))
+
+
+# ============================================================
+section("is_dataclass with __getattr__")
+# ============================================================
+
+# bpo-37868: __getattr__ returning truthy should not fool is_dataclass
+
+
+class AlwaysReturns:
+    def __getattr__(self, key):
+        return 0
+
+
+check("is_dataclass rejects __getattr__ class", not is_dataclass(AlwaysReturns))
+check("is_dataclass rejects __getattr__ instance", not is_dataclass(AlwaysReturns()))
+
+
+class FakeDataclass:
+    pass
+
+
+fdc_obj = FakeDataclass()
+fdc_obj.__dataclass_fields__ = []
+check("is_dataclass rejects fake __dataclass_fields__", not is_dataclass(fdc_obj))
+
+
+# ============================================================
+section("asdict with tuple_factory-like nested containers")
+# ============================================================
+
+from collections import namedtuple
+
+
+@dataclass
+class AsDictUser:
+    name: str
+    id: int
+
+
+@dataclass
+class AsDictGroupList:
+    id: int
+    users: list
+
+
+a_user = AsDictUser("Alice", 1)
+b_user = AsDictUser("Bob", 2)
+gl = AsDictGroupList(0, [a_user, b_user])
+gld = asdict(gl)
+check(
+    "asdict list of dataclasses",
+    gld == {"id": 0, "users": [{"name": "Alice", "id": 1}, {"name": "Bob", "id": 2}]},
+)
+
+
+# asdict copies values (not references)
+a_copy = AsDictUser("Test", 1)
+d_copy = asdict(a_copy)
+check("asdict returns new dict each time", asdict(a_copy) is not asdict(a_copy))
+check("asdict values correct", d_copy == {"name": "Test", "id": 1})
+
+
+# ============================================================
+section("astuple with tuple_factory")
+# ============================================================
+
+
+@dataclass
+class ATupleC:
+    x: int
+    y: int
+
+
+NT = namedtuple("NT", "x y")
+
+
+def nt_factory(lst):
+    return NT(*lst)
+
+
+atc = ATupleC(1, 2)
+att = astuple(atc, tuple_factory=nt_factory)
+check("astuple tuple_factory type", type(att) is NT)
+check("astuple tuple_factory values", att == NT(1, 2))
+
+
+# ============================================================
+section("Frozen empty dataclass")
+# ============================================================
+
+
+@dataclass(frozen=True)
+class FrozenEmpty:
+    pass
+
+
+fe = FrozenEmpty()
+check_raises(
+    "frozen empty setattr",
+    FrozenInstanceError,
+    lambda: setattr(fe, "i", 5),
+)
+check_raises(
+    "frozen empty delattr",
+    FrozenInstanceError,
+    lambda: delattr(fe, "i"),
+)
+
+
+# ============================================================
+section("Overwriting __hash__ on frozen")
+# ============================================================
+
+
+@dataclass(frozen=True)
+class FrozenCustomHash:
+    x: int
+
+    def __hash__(self):
+        return 301
+
+
+check("frozen custom hash used", hash(FrozenCustomHash(100)) == 301)
+
+
+# ============================================================
+section("Overwriting __setattr__/__delattr__ on frozen raises")
+# ============================================================
+
+check_raises(
+    "frozen with __setattr__ raises",
+    TypeError,
+    lambda: dataclass(
+        type(
+            "Bad",
+            (),
+            {
+                "__annotations__": {"x": int},
+                "__setattr__": lambda self, name, value: None,
+            },
+        ),
+        frozen=True,
+    ),
+)
+
+check_raises(
+    "frozen with __delattr__ raises",
+    TypeError,
+    lambda: dataclass(
+        type(
+            "Bad",
+            (),
+            {
+                "__annotations__": {"x": int},
+                "__delattr__": lambda self, name: None,
+            },
+        ),
+        frozen=True,
+    ),
+)
+
+
+# ============================================================
+section("Custom __setattr__ with frozen=False")
+# ============================================================
+
+
+@dataclass(frozen=False)
+class CustomSetattr:
+    x: int
+
+    def __setattr__(self, name, value):
+        self.__dict__["x"] = value * 2
+
+
+check("custom __setattr__ used", CustomSetattr(10).x == 20)
+
+
+# ============================================================
+section("No dataclass fields")
+# ============================================================
+
+
+@dataclass
+class NoFields:
+    pass
+
+
+nf = NoFields()
+check("no fields len", len(fields(NoFields)) == 0)
+check("no fields repr", repr(nf) == "NoFields()")
+
+
+# ============================================================
+section("Existing docstring not overridden")
+# ============================================================
+
+
+@dataclass
+class HasDocstring:
+    """My custom docstring."""
+
+    x: int
+
+
+check("existing docstring preserved", HasDocstring.__doc__ == "My custom docstring.")
+
+
+# ============================================================
+section("Overwritten __eq__ is kept")
+# ============================================================
+
+
+@dataclass
+class CustomEq:
+    x: int
+
+    def __eq__(self, other):
+        return other == 3
+
+
+check("custom __eq__ used", CustomEq(1) == 3)
+check("custom __eq__ negative", CustomEq(1) != 1)
+
+
+# ============================================================
+section("Overwriting order methods raises")
+# ============================================================
+
+check_raises(
+    "order=True with __lt__ raises",
+    TypeError,
+    lambda: dataclass(
+        type(
+            "Bad",
+            (),
+            {
+                "__annotations__": {"x": int},
+                "__lt__": lambda self, other: True,
+            },
+        ),
+        order=True,
+    ),
+)
+
+
+# ============================================================
+section("InitVar without default requires specification in replace()")
+# ============================================================
+
+
+@dataclass
+class InitVarRequired:
+    x: int
+    y: InitVar[int]
+
+    def __post_init__(self, y):
+        self.x *= y
+
+
+ivreq = InitVarRequired(1, 10)
+check("InitVar required original", ivreq.x == 10)
+
+check_raises(
+    "replace without required InitVar raises",
+    (TypeError, ValueError),
+    lambda: replace(ivreq, x=3),
+)
+
+ivreq2 = replace(ivreq, x=3, y=5)
+check("replace with required InitVar", ivreq2.x == 15)
+
+
+# ============================================================
+section("Weakref slot via make_dataclass")
+# ============================================================
+
+WrMdc = make_dataclass("WrMdc", [("a", int)], slots=True, weakref_slot=True)
+check("weakref_slot in make_dataclass slots", "__weakref__" in WrMdc.__slots__)
+wr_mdc_obj = WrMdc(1)
+wr_mdc_ref = weakref.ref(wr_mdc_obj)
+check("weakref via make_dataclass works", wr_mdc_ref() is wr_mdc_obj)
+
+check_raises(
+    "weakref_slot without slots in make_dataclass",
+    TypeError,
+    lambda: make_dataclass("Bad", [("a", int)], weakref_slot=True),
+)
+
+
+# ============================================================
+section("Weakref slot subclass inherits weakref")
+# ============================================================
+
+
+@dataclass(slots=True, weakref_slot=True)
+class WrBase:
+    field_val: int
+
+
+@dataclass(slots=True, weakref_slot=True)
+class WrSubWithSlot(WrBase):
+    pass
+
+
+# __weakref__ should be in base, not sub
+check("weakref in base slots", "__weakref__" in WrBase.__slots__)
+check(
+    "weakref not duplicated in sub slots", "__weakref__" not in WrSubWithSlot.__slots__
+)
+wr_sub = WrSubWithSlot(1)
+wr_sub_ref = weakref.ref(wr_sub)
+check("weakref subclass still works", wr_sub_ref() is wr_sub)
+
+
+@dataclass(slots=True)
+class WrSubWithoutSlot(WrBase):
+    pass
+
+
+# Even without weakref_slot, should be weakref-able via base
+wr_sub2 = WrSubWithoutSlot(1)
+wr_sub2_ref = weakref.ref(wr_sub2)
+check("weakref subclass without weakref_slot", wr_sub2_ref() is wr_sub2)
+
+
+# ============================================================
+section("field kw_only attribute")
+# ============================================================
+
+# Verify the kw_only attribute on Field objects is set correctly
+
+
+@dataclass(kw_only=True)
+class FieldKwOnlyAttr:
+    a: int
+
+
+check("kw_only=True sets field.kw_only", fields(FieldKwOnlyAttr)[0].kw_only)
+
+
+@dataclass(kw_only=True)
+class FieldKwOnlyAttrOverride:
+    a: int = field(kw_only=False)
+
+
+check(
+    "kw_only=True field override to False",
+    not fields(FieldKwOnlyAttrOverride)[0].kw_only,
+)
+
+
+@dataclass
+class FieldKwOnlyAttrDefault:
+    a: int
+
+
+check(
+    "default kw_only is False on field",
+    not fields(FieldKwOnlyAttrDefault)[0].kw_only,
+)
+
+
+# ============================================================
+section("KW_ONLY with __post_init__ and InitVar")
+# ============================================================
+
+
+@dataclass
+class KwOnlyPostInit:
+    a: int
+    _: KW_ONLY
+    b: InitVar[int]
+    c: int
+    d: InitVar[int]
+
+    def __post_init__(self, b, d):
+        self.a = b
+        self.c = d
+
+
+kopi = KwOnlyPostInit(1, c=2, b=3, d=4)
+check(
+    "KW_ONLY post_init with InitVar",
+    kopi.a == 3 and kopi.c == 4,
+)
+
+
+# ============================================================
+section("fields() on non-dataclass raises TypeError")
+# ============================================================
+
+check_raises("fields(0) raises", TypeError, lambda: fields(0))
+check_raises("fields(int) raises", TypeError, lambda: fields(int))
+
+# Also verify the traceback is clean (no AttributeError leaking through)
+import traceback as _tb
+import io as _io
+
+_stdout = _io.StringIO()
+try:
+    fields(object)
+except TypeError as exc:
+    _tb.print_exception(type(exc), exc, exc.__traceback__, file=_stdout)
+
+_printed = _stdout.getvalue()
+check("fields() clean traceback", "AttributeError" not in _printed)
+check(
+    "fields() clean traceback no __dataclass_fields__",
+    "__dataclass_fields__" not in _printed,
+)
+
+
+# ============================================================
+section("is_dataclass on non-decorated subclass")
+# ============================================================
+
+
+@dataclass
+class IsDataclassBase:
+    y: int
+
+
+class IsDataclassSub(IsDataclassBase):
+    pass
+
+
+check("is_dataclass on subclass class", is_dataclass(IsDataclassSub))
+check("is_dataclass on subclass instance", is_dataclass(IsDataclassSub(y=5)))
+
+
+# ============================================================
+section("Non-default after default error includes field name")
+# ============================================================
+
+try:
+    dataclass(type("Bad", (), {"__annotations__": {"x": int, "y": int}, "x": 0}))
+    check("non-default after default error msg", False)
+except TypeError as e:
+    msg = str(e)
+    check("error mentions non-default field name", "'y'" in msg or "y" in msg)
+
+
+# ============================================================
+section("Frozen multiple inheritance rules")
+# ============================================================
+
+# non-frozen from frozen base raises
+check_raises(
+    "non-frozen child of frozen raises",
+    TypeError,
+    lambda: dataclass(type("Bad", (FrozenParent,), {"__annotations__": {"j": int}})),
+)
+
+# frozen from non-frozen base raises
+check_raises(
+    "frozen child of non-frozen raises",
+    TypeError,
+    lambda: dataclass(
+        type("Bad", (Parent,), {"__annotations__": {"j": int}}), frozen=True
+    ),
+)
+
+
+# ============================================================
+section("Slots with inherited __dict__")
+# ============================================================
+
+
+class WithDictSlot:
+    __slots__ = ("__dict__",)
+
+
+@dataclass(slots=True)
+class InheritsDictSlot(WithDictSlot):
+    pass
+
+
+check(
+    "inherited __dict__ slot not duplicated",
+    "__dict__" not in InheritsDictSlot.__slots__,
+)
+check("inherited __dict__ slot works", InheritsDictSlot().__dict__ == {})
+
+
+# ============================================================
 # Summary
 # ============================================================
 

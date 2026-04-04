@@ -16,10 +16,18 @@ Matrix of backported and not-yet-backported features:
 | 3.10 | `match_args` parameter (`__match_args__` generation) | Backported |
 | 3.10 | `slots` parameter (`__slots__` generation) | Backported |
 | 3.11 | `weakref_slot` parameter | Backported |
+| 3.11 | Frozen+slots pickling (`__getstate__`/`__setstate__`) | Backported |
+| 3.11 | Slots with `init=False` default fields (bpo-44649) | Backported |
 | 3.11–3.12 | `fields()` traceback improvements | Backported |
 | 3.11–3.12 | Mutable default value validation | Backported |
+| 3.12 | Field named `BUILTINS` in frozen classes (gh-96151) | Backported |
+| 3.12 | Special underscore field names like `_dflt_x` (gh-98886) | Backported |
+| 3.12 | Inherited `__dict__` slot handling | Backported |
 | 3.12–3.13 | Optimized `__eq__` and `__repr__` recursion guards | Backported |
+| 3.13 | Non-frozen subclass of frozen: mutable attr set/delete | Backported |
 | 3.14 | `decorator` parameter for `make_dataclass()` | Backported |
+| 3.12 | `module` parameter for `make_dataclass()` | Not backported |
+| 3.12 | `defaultdict` support in `asdict()`/`astuple()` | Not backported |
 
 ## Usage
 
