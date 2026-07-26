@@ -724,9 +724,18 @@ def _hash_fn(fields: List[Field]) -> Any:
 
 
 def _is_classvar(a_type: Any, typing: Any) -> bool:
-    # This test uses a typing internal class, but it's the best way to
-    # test if this is a ClassVar.
-    return type(a_type) is typing._ClassVar
+    # This test uses typing internals, but it's the best way to test
+    # if this is a ClassVar.  Python 3.6 represents ClassVar[T] as an
+    # instance of typing._ClassVar; 3.7+ removed that class and uses a
+    # _GenericAlias with __origin__ set to ClassVar (this is the same
+    # check CPython's own dataclasses uses, unchanged from 3.7 through
+    # at least 3.13).
+    if hasattr(typing, "_ClassVar"):
+        return type(a_type) is typing._ClassVar
+    return a_type is typing.ClassVar or (
+        type(a_type) is typing._GenericAlias
+        and a_type.__origin__ is typing.ClassVar
+    )
 
 
 def _is_kw_only(a_type: Any, dataclasses: Any) -> bool:

@@ -36,6 +36,17 @@ your Python path. It is a drop-in replacement for the standard library module an
 can transparently replace the stdlib if running on a Python version that doesn't
 support some feature you like.
 
+Supports Python 3.6 and later from a single codebase — the only
+version-sensitive code is the `ClassVar` detection, which adapts to the
+`typing` internals of the running interpreter (the test suite passes on 3.6
+and 3.11).
+
+Note: don't mix this module with the stdlib `dataclasses` in the same class.
+`InitVar`, `Field`, `field()` and the `KW_ONLY` sentinel are compared by
+identity, so e.g. a stdlib `InitVar` annotation on a class decorated with this
+module's `@dataclass` will not be recognized. Import everything from one module,
+as in the example below.
+
 ```python
 try:
     from dataclasses import dataclass, field, KW_ONLY

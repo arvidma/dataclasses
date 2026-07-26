@@ -10,9 +10,9 @@ import weakref
 from collections import OrderedDict, namedtuple
 from copy import deepcopy
 
-if sys.version_info[:2] != (3, 6):
+if sys.version_info < (3, 6):
     print(
-        f"ERROR: These tests require Python 3.6, got {sys.version_info[0]}.{sys.version_info[1]}"
+        f"ERROR: These tests require Python 3.6+, got {sys.version_info[0]}.{sys.version_info[1]}"
     )
     sys.exit(1)
 
@@ -32,6 +32,8 @@ from dataclasses import (
     make_dataclass,
     replace,
 )
+
+print(f"Running on Python {sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}")
 
 passed = 0
 failed = 0
