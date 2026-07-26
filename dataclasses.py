@@ -1,3 +1,13 @@
+# Backport of Python 3.8+ dataclass features to Python 3.6+.
+#
+# Derived from Eric V. Smith's dataclasses backport
+# (https://github.com/ericvsmith/dataclasses, Apache License 2.0)
+# and from CPython's Lib/dataclasses.py (PSF License).
+#
+# Licensed under the Apache License, Version 2.0; see the LICENSE
+# file in the source repository:
+# https://github.com/arvidma/dataclasses
+
 import copy
 import inspect
 import itertools
