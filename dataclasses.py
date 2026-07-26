@@ -1001,6 +1001,34 @@ def _get_slots(cls: type) -> List[str]:
         return list(slots)
 
 
+def _update_func_cell_for__class__(f: Any, oldcls: type, newcls: type) -> bool:
+    # Returns True if we update a cell, else False.
+    if f is None:
+        # Functions in a class namespace can be None.
+        return False
+    try:
+        idx = f.__code__.co_freevars.index("__class__")
+    except ValueError:
+        # This function doesn't reference __class__, so nothing to do.
+        return False
+    # Fix the cell to point to the new class, if it's already pointing
+    # at the old class.
+    closure = f.__closure__[idx]
+    if closure.cell_contents is oldcls:
+        try:
+            closure.cell_contents = newcls
+        except AttributeError:
+            # cell_contents became writable in Python 3.7
+            # (bpo-30486); on 3.6 set it through the C API instead.
+            import ctypes
+
+            ctypes.pythonapi.PyCell_Set(
+                ctypes.py_object(closure), ctypes.py_object(newcls)
+            )
+        return True
+    return False
+
+
 def _add_slots(cls: type, is_frozen: bool, weakref_slot: bool) -> type:
     # Need to create a new class, since we can't set __slots__
     # after a class has been created.
@@ -1043,18 +1071,39 @@ def _add_slots(cls: type, is_frozen: bool, weakref_slot: bool) -> type:
 
     # And finally create the class.
     qualname = getattr(cls, "__qualname__", None)
-    cls = type(cls)(cls.__name__, cls.__bases__, cls_dict)
+    newcls = type(cls)(cls.__name__, cls.__bases__, cls_dict)
     if qualname is not None:
-        cls.__qualname__ = qualname
+        newcls.__qualname__ = qualname
 
     if is_frozen:
         # Need this for pickling frozen classes with slots.
         if "__getstate__" not in cls_dict:
-            setattr(cls, "__getstate__", _dataclass_getstate)
+            setattr(newcls, "__getstate__", _dataclass_getstate)
         if "__setstate__" not in cls_dict:
-            setattr(cls, "__setstate__", _dataclass_setstate)
+            setattr(newcls, "__setstate__", _dataclass_setstate)
 
-    return cls
+    # Fix up any closures which reference __class__.  This is used to
+    # fix zero argument super so that it points to the correct class
+    # (the newly created one, which we're returning) and not the
+    # original class.  We can break out of this loop as soon as we
+    # make an update, since all closures for a class will share a
+    # given cell.  (gh-90562)
+    for member in newcls.__dict__.values():
+        # If this is a wrapped function, unwrap it.
+        member = getattr(member, "__wrapped__", member)
+
+        if isinstance(member, types.FunctionType):
+            if _update_func_cell_for__class__(member, cls, newcls):
+                break
+        elif isinstance(member, property):
+            if (
+                _update_func_cell_for__class__(member.fget, cls, newcls)
+                or _update_func_cell_for__class__(member.fset, cls, newcls)
+                or _update_func_cell_for__class__(member.fdel, cls, newcls)
+            ):
+                break
+
+    return newcls
 
 
 def _process_class(

@@ -1896,6 +1896,58 @@ check(
 
 
 # ============================================================
+section("Zero-argument super() with slots=True")
+# ============================================================
+
+# gh-90562: slots=True creates a new class, so methods' __class__
+# closure cells must be repointed for zero-argument super() to work.
+
+
+class SuperGreetBase:
+    def greet(self):
+        return "base"
+
+
+@dataclass(slots=True)
+class SuperGreetChild(SuperGreetBase):
+    x: int
+
+    def greet(self):
+        return "child:" + super().greet()
+
+    def own_class(self):
+        return __class__
+
+
+sgc = SuperGreetChild(1)
+check("zero-arg super() works with slots", sgc.greet() == "child:base")
+check("__class__ points at the slots class", sgc.own_class() is SuperGreetChild)
+
+
+@dataclass(slots=True)
+class SuperGreetProperty(SuperGreetBase):
+    x: int
+
+    @property
+    def label(self):
+        return super().greet() + "!"
+
+
+check("super() in property with slots", SuperGreetProperty(1).label == "base!")
+
+
+@dataclass(slots=True, frozen=True)
+class SuperGreetFrozen(SuperGreetBase):
+    x: int
+
+    def greet(self):
+        return "frozen:" + super().greet()
+
+
+check("super() with frozen+slots", SuperGreetFrozen(1).greet() == "frozen:base")
+
+
+# ============================================================
 # Summary
 # ============================================================
 
