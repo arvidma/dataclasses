@@ -28,6 +28,7 @@ Matrix of backported and not-yet-backported features:
 | 3.14 | `decorator` parameter for `make_dataclass()` | Backported |
 | 3.12 | `module` parameter for `make_dataclass()` | Not backported |
 | 3.12 | `defaultdict` support in `asdict()`/`astuple()` | Not backported |
+| 3.13 | `__replace__()` method (`copy.replace()` support) | Not backported |
 
 ## Usage
 
