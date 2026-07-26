@@ -28,6 +28,7 @@ Matrix of backported and not-yet-backported features:
 | 3.14 | `decorator` parameter for `make_dataclass()` | Backported |
 | 3.12 | `module` parameter for `make_dataclass()` | Not backported |
 | 3.12 | `defaultdict` support in `asdict()`/`astuple()` | Not backported |
+| 3.13 | `__replace__()` method (`copy.replace()` support) | Not backported |
 
 ## Usage
 
@@ -35,6 +36,17 @@ Drop the single `dataclasses.py` file into your project (vendoring), or add it t
 your Python path. It is a drop-in replacement for the standard library module and
 can transparently replace the stdlib if running on a Python version that doesn't
 support some feature you like.
+
+Supports Python 3.6 and later from a single codebase — the only
+version-sensitive code is the `ClassVar` detection, which adapts to the
+`typing` internals of the running interpreter. The test suite runs in CI on
+Python 3.6 through 3.13.
+
+Note: don't mix this module with the stdlib `dataclasses` in the same class.
+`InitVar`, `Field`, `field()` and the `KW_ONLY` sentinel are compared by
+identity, so e.g. a stdlib `InitVar` annotation on a class decorated with this
+module's `@dataclass` will not be recognized. Import everything from one module,
+as in the example below.
 
 ```python
 try:

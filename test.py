@@ -9,15 +9,17 @@ import typing
 import weakref
 from collections import OrderedDict, namedtuple
 from copy import deepcopy
+from typing import ClassVar
 
-if sys.version_info[:2] != (3, 6):
+if sys.version_info < (3, 6):
     print(
-        f"ERROR: These tests require Python 3.6, got {sys.version_info[0]}.{sys.version_info[1]}"
+        f"ERROR: These tests require Python 3.6+, got {sys.version_info[0]}.{sys.version_info[1]}"
     )
     sys.exit(1)
 
 # Ensure we import from the current directory, not stdlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dataclasses
 from dataclasses import (
     KW_ONLY,
     MISSING,
@@ -32,6 +34,8 @@ from dataclasses import (
     make_dataclass,
     replace,
 )
+
+print(f"Running on Python {sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}")
 
 passed = 0
 failed = 0
@@ -1287,13 +1291,13 @@ check("replace init=False gets default", rif2.x == 5 and rif2.y == 10)
 
 check_raises(
     "replace init=False field raises",
-    (TypeError, ValueError),
+    ValueError,
     lambda: replace(rif, x=2, y=30),
 )
 
 check_raises(
     "replace only init=False field raises",
-    (TypeError, ValueError),
+    ValueError,
     lambda: replace(rif, y=30),
 )
 
@@ -1317,7 +1321,7 @@ check("frozen replace values", frif2.x == 3 and frif2.y == 2 and frif2.z == 10)
 
 check_raises(
     "frozen replace init=False raises",
-    (TypeError, ValueError),
+    ValueError,
     lambda: replace(frif, x=3, z=20, t=50),
 )
 
@@ -1636,7 +1640,7 @@ check("InitVar required original", ivreq.x == 10)
 
 check_raises(
     "replace without required InitVar raises",
-    (TypeError, ValueError),
+    ValueError,
     lambda: replace(ivreq, x=3),
 )
 
@@ -1850,6 +1854,197 @@ check(
     "__dict__" not in InheritsDictSlot.__slots__,
 )
 check("inherited __dict__ slot works", InheritsDictSlot().__dict__ == {})
+
+
+# ============================================================
+section("asdict()/astuple() with namedtuple values")
+# ============================================================
+
+# bpo-34363: namedtuples must be rebuilt with positional args, and the
+# result keeps the namedtuple type.
+
+PointNT = namedtuple("PointNT", "x y")
+
+
+@dataclass
+class WithNamedTuple:
+    pt: PointNT
+
+
+wnt = WithNamedTuple(PointNT(1, 2))
+wnt_d = asdict(wnt)
+check("asdict namedtuple keeps type", type(wnt_d["pt"]) is PointNT)
+check("asdict namedtuple values", wnt_d["pt"] == PointNT(1, 2))
+
+wnt_t = astuple(wnt)
+check("astuple namedtuple keeps type", type(wnt_t[0]) is PointNT)
+check("astuple namedtuple values", wnt_t == (PointNT(1, 2),))
+
+
+@dataclass
+class InsideNamedTuple:
+    v: int
+
+
+wnt_nested = WithNamedTuple(PointNT(InsideNamedTuple(1), 2))
+check(
+    "asdict recurses into namedtuple members",
+    asdict(wnt_nested)["pt"] == PointNT({"v": 1}, 2),
+)
+check(
+    "astuple recurses into namedtuple members",
+    astuple(wnt_nested) == (PointNT((1,), 2),),
+)
+
+
+# ============================================================
+section("Zero-argument super() with slots=True")
+# ============================================================
+
+# gh-90562: slots=True creates a new class, so methods' __class__
+# closure cells must be repointed for zero-argument super() to work.
+
+
+class SuperGreetBase:
+    def greet(self):
+        return "base"
+
+
+@dataclass(slots=True)
+class SuperGreetChild(SuperGreetBase):
+    x: int
+
+    def greet(self):
+        return "child:" + super().greet()
+
+    def own_class(self):
+        return __class__
+
+
+sgc = SuperGreetChild(1)
+check("zero-arg super() works with slots", sgc.greet() == "child:base")
+check("__class__ points at the slots class", sgc.own_class() is SuperGreetChild)
+
+
+@dataclass(slots=True)
+class SuperGreetProperty(SuperGreetBase):
+    x: int
+
+    @property
+    def label(self):
+        return super().greet() + "!"
+
+
+check("super() in property with slots", SuperGreetProperty(1).label == "base!")
+
+
+@dataclass(slots=True, frozen=True)
+class SuperGreetFrozen(SuperGreetBase):
+    x: int
+
+    def greet(self):
+        return "frozen:" + super().greet()
+
+
+check("super() with frozen+slots", SuperGreetFrozen(1).greet() == "frozen:base")
+
+
+# ============================================================
+section("String annotations for ClassVar/InitVar/KW_ONLY")
+# ============================================================
+
+# The _is_type() regex machinery resolves pseudo-field markers given
+# as string annotations, both bare and module-qualified.
+
+
+@dataclass
+class StrClassVar:
+    x: int
+    cv_qualified: "typing.ClassVar[int]" = 0
+    cv_bare: "ClassVar[int]" = 0
+
+
+check(
+    "string ClassVar annotations excluded from fields",
+    [f.name for f in fields(StrClassVar)] == ["x"],
+)
+check("string ClassVar not in init", StrClassVar(5).x == 5)
+check("string ClassVar accessible on class", StrClassVar.cv_qualified == 0)
+
+
+@dataclass
+class StrInitVar:
+    x: int
+    iv_bare: "InitVar[int]" = 2
+    iv_qualified: "dataclasses.InitVar[int]" = 3
+
+    def __post_init__(self, iv_bare, iv_qualified):
+        self.x = self.x * iv_bare * iv_qualified
+
+
+check(
+    "string InitVar annotations excluded from fields",
+    [f.name for f in fields(StrInitVar)] == ["x"],
+)
+check("string InitVars passed to post_init", StrInitVar(1).x == 6)
+check("string InitVar overridable", StrInitVar(1, iv_bare=5).x == 15)
+
+
+@dataclass
+class StrKwOnly:
+    a: int
+    _: "KW_ONLY"
+    b: int = 0
+
+
+skw = StrKwOnly(1, b=2)
+check("string KW_ONLY detected", skw.a == 1 and skw.b == 2)
+check_raises("string KW_ONLY rejects positional", TypeError, lambda: StrKwOnly(1, 2))
+
+
+# ============================================================
+section("Descriptor default and __set_name__ (PEP 487)")
+# ============================================================
+
+
+class RecordingDescriptor:
+    def __init__(self):
+        self.owner = None
+        self.name = None
+
+    def __set_name__(self, owner, name):
+        self.owner = owner
+        self.name = name
+
+
+rec_desc = RecordingDescriptor()
+
+
+@dataclass
+class WithDescriptorDefault:
+    d: int = field(default=rec_desc)
+
+
+check("__set_name__ called with owner", rec_desc.owner is WithDescriptorDefault)
+check("__set_name__ called with field name", rec_desc.name == "d")
+
+
+# ============================================================
+section("Field named _return_type")
+# ============================================================
+
+# Regression guard for the _create_fn() internal renaming (issues 2
+# and 3): a field with the old internal name must not collide with
+# the generated code.
+
+
+@dataclass
+class ReturnTypeField:
+    _return_type: int = 5
+
+
+check("_return_type field default", ReturnTypeField()._return_type == 5)
+check("_return_type field in init", ReturnTypeField(_return_type=7)._return_type == 7)
 
 
 # ============================================================

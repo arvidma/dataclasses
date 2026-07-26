@@ -1,3 +1,13 @@
+# Backport of Python 3.8+ dataclass features to Python 3.6+.
+#
+# Derived from Eric V. Smith's dataclasses backport
+# (https://github.com/ericvsmith/dataclasses, Apache License 2.0)
+# and from CPython's Lib/dataclasses.py (PSF License).
+#
+# Licensed under the Apache License, Version 2.0; see the LICENSE
+# file in the source repository:
+# https://github.com/arvidma/dataclasses
+
 import copy
 import inspect
 import itertools
@@ -651,8 +661,9 @@ def _repr_fn(fields: List[Field]) -> Any:
 
 
 def _frozen_get_del_attr(cls: type, fields: List[Field]) -> Tuple[Any, Any]:
-    # XXX: globals is modified on the first call to _create_fn, then
-    # the modified version is used in the second call.  Is this okay?
+    # Both generated functions share this globals dict, matching
+    # CPython <=3.12; neither _create_fn() call mutates it (only
+    # locals gains entries, and only when return_type is passed).
     globals = {"cls": cls, "FrozenInstanceError": FrozenInstanceError}
     if fields:
         fields_str = "(" + ",".join(repr(f.name) for f in fields) + ",)"
@@ -724,9 +735,18 @@ def _hash_fn(fields: List[Field]) -> Any:
 
 
 def _is_classvar(a_type: Any, typing: Any) -> bool:
-    # This test uses a typing internal class, but it's the best way to
-    # test if this is a ClassVar.
-    return type(a_type) is typing._ClassVar
+    # This test uses typing internals, but it's the best way to test
+    # if this is a ClassVar.  Python 3.6 represents ClassVar[T] as an
+    # instance of typing._ClassVar; 3.7+ removed that class and uses a
+    # _GenericAlias with __origin__ set to ClassVar (this is the same
+    # check CPython's own dataclasses uses, unchanged from 3.7 through
+    # at least 3.13).
+    if hasattr(typing, "_ClassVar"):
+        return type(a_type) is typing._ClassVar
+    return a_type is typing.ClassVar or (
+        type(a_type) is typing._GenericAlias
+        and a_type.__origin__ is typing.ClassVar
+    )
 
 
 def _is_kw_only(a_type: Any, dataclasses: Any) -> bool:
@@ -992,6 +1012,34 @@ def _get_slots(cls: type) -> List[str]:
         return list(slots)
 
 
+def _update_func_cell_for__class__(f: Any, oldcls: type, newcls: type) -> bool:
+    # Returns True if we update a cell, else False.
+    if f is None:
+        # Functions in a class namespace can be None.
+        return False
+    try:
+        idx = f.__code__.co_freevars.index("__class__")
+    except ValueError:
+        # This function doesn't reference __class__, so nothing to do.
+        return False
+    # Fix the cell to point to the new class, if it's already pointing
+    # at the old class.
+    closure = f.__closure__[idx]
+    if closure.cell_contents is oldcls:
+        try:
+            closure.cell_contents = newcls
+        except AttributeError:
+            # cell_contents became writable in Python 3.7
+            # (bpo-30486); on 3.6 set it through the C API instead.
+            import ctypes
+
+            ctypes.pythonapi.PyCell_Set(
+                ctypes.py_object(closure), ctypes.py_object(newcls)
+            )
+        return True
+    return False
+
+
 def _add_slots(cls: type, is_frozen: bool, weakref_slot: bool) -> type:
     # Need to create a new class, since we can't set __slots__
     # after a class has been created.
@@ -1034,18 +1082,39 @@ def _add_slots(cls: type, is_frozen: bool, weakref_slot: bool) -> type:
 
     # And finally create the class.
     qualname = getattr(cls, "__qualname__", None)
-    cls = type(cls)(cls.__name__, cls.__bases__, cls_dict)
+    newcls = type(cls)(cls.__name__, cls.__bases__, cls_dict)
     if qualname is not None:
-        cls.__qualname__ = qualname
+        newcls.__qualname__ = qualname
 
     if is_frozen:
         # Need this for pickling frozen classes with slots.
         if "__getstate__" not in cls_dict:
-            setattr(cls, "__getstate__", _dataclass_getstate)
+            setattr(newcls, "__getstate__", _dataclass_getstate)
         if "__setstate__" not in cls_dict:
-            setattr(cls, "__setstate__", _dataclass_setstate)
+            setattr(newcls, "__setstate__", _dataclass_setstate)
 
-    return cls
+    # Fix up any closures which reference __class__.  This is used to
+    # fix zero argument super so that it points to the correct class
+    # (the newly created one, which we're returning) and not the
+    # original class.  We can break out of this loop as soon as we
+    # make an update, since all closures for a class will share a
+    # given cell.  (gh-90562)
+    for member in newcls.__dict__.values():
+        # If this is a wrapped function, unwrap it.
+        member = getattr(member, "__wrapped__", member)
+
+        if isinstance(member, types.FunctionType):
+            if _update_func_cell_for__class__(member, cls, newcls):
+                break
+        elif isinstance(member, property):
+            if (
+                _update_func_cell_for__class__(member.fget, cls, newcls)
+                or _update_func_cell_for__class__(member.fset, cls, newcls)
+                or _update_func_cell_for__class__(member.fdel, cls, newcls)
+            ):
+                break
+
+    return newcls
 
 
 def _process_class(
@@ -1313,12 +1382,16 @@ def dataclass(
 
     Examines PEP 526 __annotations__ to determine fields.
 
-    If init is true, an __init__() method is added to the class. If
-    repr is true, a __repr__() method is added. If order is true, rich
-    comparison dunder methods are added. If unsafe_hash is true, a
-    __hash__() method function is added. If frozen is true, fields may
-    not be assigned to after instance creation. If kw_only is true, then
-    by default all fields are keyword-only.
+    If init is true, an __init__() method is added to the class. If repr
+    is true, a __repr__() method is added. If eq is true, an __eq__()
+    method is added. If order is true, rich comparison dunder methods are
+    added. If unsafe_hash is true, a __hash__() method is added. If frozen
+    is true, fields may not be assigned to after instance creation. If
+    match_args is true, the __match_args__ tuple is added. If kw_only is
+    true, then by default all fields are keyword-only. If slots is true, a
+    new class with a __slots__ attribute is returned, and if weakref_slot
+    is also true, that __slots__ includes __weakref__ so instances can be
+    weakly referenced.
     """
 
     def wrap(cls: type) -> type:
@@ -1406,6 +1479,14 @@ def _asdict_inner(obj: Any, dict_factory: Callable[..., Any]) -> Any:
             value = _asdict_inner(getattr(obj, f.name), dict_factory)
             result.append((f.name, value))
         return dict_factory(result)
+    elif isinstance(obj, tuple) and hasattr(obj, "_fields"):
+        # obj is a namedtuple.  Recurse into it, but the returned
+        # object is another namedtuple of the same type.  This is
+        # similar to how other list- or tuple-derived classes are
+        # treated (see below), but we just need to create them
+        # differently because a namedtuple's __new__ needs to be
+        # called differently (see bpo-34363).
+        return type(obj)(*[_asdict_inner(v, dict_factory) for v in obj])
     elif isinstance(obj, (list, tuple)):
         return type(obj)(_asdict_inner(v, dict_factory) for v in obj)
     elif isinstance(obj, dict):
@@ -1448,6 +1529,11 @@ def _astuple_inner(obj: Any, tuple_factory: Callable[..., Any]) -> Any:
             value = _astuple_inner(getattr(obj, f.name), tuple_factory)
             result.append(value)
         return tuple_factory(result)
+    elif isinstance(obj, tuple) and hasattr(obj, "_fields"):
+        # obj is a namedtuple.  Recurse into it, but the returned
+        # object is another namedtuple of the same type (see
+        # bpo-34363 and _asdict_inner above).
+        return type(obj)(*[_astuple_inner(v, tuple_factory) for v in obj])
     elif isinstance(obj, (list, tuple)):
         return type(obj)(_astuple_inner(v, tuple_factory) for v in obj)
     elif isinstance(obj, dict):

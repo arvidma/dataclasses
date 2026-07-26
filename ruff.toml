@@ -1,0 +1,18 @@
+# This module must stay runnable on Python 3.6.  py37 is the oldest
+# version ruff can target; it is close enough to keep the UP
+# (pyupgrade) rules from suggesting 3.9+/3.10+-only syntax.
+target-version = "py37"
+
+[lint]
+# Pin the rule selection so results don't drift when a new ruff
+# release changes its defaults (ruff 0.16 enabled UP/PLR/RUF/... by
+# default, which both fights 3.6-compatible code and flags the
+# intentional self-comparisons in test.py).
+#
+# flake8-builtins (A) is deliberately not enabled: the code mirrors
+# CPython's own naming (`globals`, `locals`, `type` as a loop
+# variable, and the module name itself), and staying diffable against
+# upstream is worth more than avoiding builtin shadowing.  The
+# `noqa: A002` comments in the source are kept as documentation of
+# where that shadowing is intentional.
+select = ["E4", "E7", "E9", "F"]

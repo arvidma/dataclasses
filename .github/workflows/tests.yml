@@ -1,0 +1,47 @@
+name: tests
+
+on: [push, pull_request]
+
+jobs:
+  # Python 3.6 and 3.7 are not available via actions/setup-python on
+  # current runners, and GitHub-hosted actions no longer run inside
+  # such old containers (node/glibc requirements).  Check out on the
+  # host and run the suite in an official python:<version>-slim image.
+  test-legacy:
+    name: tests (Python ${{ matrix.python-version }}, container)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.6", "3.7"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests in python:${{ matrix.python-version }}-slim
+        run: >
+          docker run --rm -v "$PWD":/repo -w /repo
+          python:${{ matrix.python-version }}-slim python test.py
+
+  test:
+    name: tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python test.py
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff mypy
+      - run: ruff check dataclasses.py test.py
+      - run: mypy --strict dataclasses.py
