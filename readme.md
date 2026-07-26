@@ -38,8 +38,8 @@ support some feature you like.
 
 Supports Python 3.6 and later from a single codebase — the only
 version-sensitive code is the `ClassVar` detection, which adapts to the
-`typing` internals of the running interpreter (the test suite passes on 3.6
-and 3.11).
+`typing` internals of the running interpreter. The test suite runs in CI on
+Python 3.6 through 3.13.
 
 Note: don't mix this module with the stdlib `dataclasses` in the same class.
 `InitVar`, `Field`, `field()` and the `KW_ONLY` sentinel are compared by
