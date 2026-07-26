@@ -661,8 +661,9 @@ def _repr_fn(fields: List[Field]) -> Any:
 
 
 def _frozen_get_del_attr(cls: type, fields: List[Field]) -> Tuple[Any, Any]:
-    # XXX: globals is modified on the first call to _create_fn, then
-    # the modified version is used in the second call.  Is this okay?
+    # Both generated functions share this globals dict, matching
+    # CPython <=3.12; neither _create_fn() call mutates it (only
+    # locals gains entries, and only when return_type is passed).
     globals = {"cls": cls, "FrozenInstanceError": FrozenInstanceError}
     if fields:
         fields_str = "(" + ",".join(repr(f.name) for f in fields) + ",)"
