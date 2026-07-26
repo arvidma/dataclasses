@@ -189,6 +189,33 @@ MISSING = _MISSING_TYPE()
 # read-only proxy that can be shared among all fields.
 _EMPTY_METADATA: Any = types.MappingProxyType({})
 
+# Types that asdict()/astuple() can return as-is instead of going
+# through copy.deepcopy() (CPython 3.12, gh-91896).  Spelled with
+# type(...) where the named aliases (types.NoneType and friends) only
+# exist on Python 3.10+.
+_ATOMIC_TYPES = frozenset(
+    {
+        # Common JSON Serializable types
+        type(None),
+        bool,
+        int,
+        float,
+        str,
+        # Other common types
+        complex,
+        bytes,
+        # Other types that are also unaffected by deepcopy
+        type(...),
+        type(NotImplemented),
+        types.CodeType,
+        types.BuiltinFunctionType,
+        types.FunctionType,
+        type,
+        range,
+        property,
+    }
+)
+
 
 # Markers for the various kinds of fields and pseudo-fields.
 class _FIELD_BASE:
@@ -435,37 +462,122 @@ def _tuple_str(obj_name: str, fields: Sequence[Field]) -> str:
     return f"({','.join([f'{obj_name}.{f.name}' for f in fields])},)"
 
 
-def _create_fn(
-    name: str,
-    args: Sequence[str],
-    body: Sequence[str],
-    *,
-    globals: Optional[Dict[str, Any]] = None,
-    locals: Optional[Dict[str, Any]] = None,
-    return_type: Any = MISSING,
-) -> Any:
-    # Note that we may mutate locals.  Caller beware!  The only
-    # callers are internal to this module, so no worries about
-    # external callers.
-    if locals is None:
-        locals = {}
-    return_annotation = ""
-    if return_type is not MISSING:
-        locals["__dataclass_return_type__"] = return_type
-        return_annotation = "->__dataclass_return_type__"
-    args_str = ",".join(args)
-    body_str = "\n".join(f"  {b}" for b in body)
+class _FuncBuilder:
+    # Collects the source of all the methods we're going to add to a
+    # class, then generates them with a single compile/exec when
+    # add_fns_to_class() is called.  This is dramatically faster than
+    # one exec per method (CPython 3.13, gh-107550).  All generated
+    # functions become siblings in one __create_fn__ closure, so they
+    # share the closed-over locals (every name is dunder-prefixed and
+    # method-specific, so there are no collisions).
 
-    # Compute the text of the entire function, wrapped in a closure
-    # so that the generated function closes over the local variables
-    # properly (rather than sharing a mutable locals dict).
-    txt = f" def {name}({args_str}){return_annotation}:\n{body_str}"
-    local_vars = ", ".join(locals.keys())
-    txt = f"def __create_fn__({local_vars}):\n{txt}\n return {name}"
+    def __init__(self, globals: Dict[str, Any]) -> None:  # noqa: A002
+        self.names: List[str] = []
+        self.src: List[str] = []
+        self.globals = globals
+        self.locals: Dict[str, Any] = {}
+        self.overwrite_errors: Dict[str, Any] = {}
+        self.unconditional_adds: Dict[str, bool] = {}
 
-    ns: Dict[str, Any] = {}
-    exec(txt, globals, ns)
-    return ns["__create_fn__"](**locals)
+    def add_fn(
+        self,
+        name: str,
+        args: Sequence[str],
+        body: Sequence[str],
+        *,
+        locals: Optional[Dict[str, Any]] = None,  # noqa: A002
+        return_type: Any = MISSING,
+        overwrite_error: Any = False,
+        unconditional_add: bool = False,
+        decorator: Optional[str] = None,
+    ) -> None:
+        if locals is not None:
+            self.locals.update(locals)
+
+        # Keep track if this method is allowed to be overwritten if it
+        # already exists in the class.  The error is method-specific,
+        # so keep it with the name.  We'll use this when we generate
+        # all of the functions in the add_fns_to_class call.
+        # overwrite_error is either True, in which case we'll raise an
+        # error, or it's a string, in which case we'll raise an error
+        # and append this string.
+        if overwrite_error:
+            self.overwrite_errors[name] = overwrite_error
+
+        # Should this function always overwrite anything that's
+        # already in the class?  The default is to not overwrite a
+        # function that already exists.
+        if unconditional_add:
+            self.unconditional_adds[name] = True
+
+        self.names.append(name)
+
+        if return_type is not MISSING:
+            self.locals[f"__dataclass_{name}_return_type__"] = return_type
+            return_annotation = f"->__dataclass_{name}_return_type__"
+        else:
+            return_annotation = ""
+        args_str = ",".join(args)
+        body_str = "\n".join(body)
+
+        # Compute the text of the entire function, add it to the text
+        # we're generating.
+        decoration = f" {decorator}\n" if decorator else ""
+        self.src.append(
+            f"{decoration} def {name}({args_str}){return_annotation}:\n{body_str}"
+        )
+
+    def add_fns_to_class(self, cls: type) -> None:
+        # The source to all of the functions we're generating.
+        fns_src = "\n".join(self.src)
+
+        # The locals they use.
+        local_vars = ",".join(self.locals.keys())
+
+        # The names of all of the functions, used for the return value
+        # of the outer function.  Need to handle the 0-tuple specially.
+        if len(self.names) == 0:
+            return_names = "()"
+        else:
+            return_names = f'({",".join(self.names)},)'
+
+        # txt is the entire function we're going to execute, including
+        # the bodies of the functions we're defining.  Here's a greatly
+        # simplified version:
+        # def __create_fn__():
+        #  def __init__(self, x, y):
+        #   self.x = x
+        #   self.y = y
+        #  @recursive_repr
+        #  def __repr__(self):
+        #   return f"cls(x={self.x!r},y={self.y!r})"
+        # return __init__,__repr__
+        txt = f"def __create_fn__({local_vars}):\n{fns_src}\n return {return_names}"
+        ns: Dict[str, Any] = {}
+        exec(txt, self.globals, ns)
+        fns = ns["__create_fn__"](**self.locals)
+
+        # Now that we've generated the functions, assign them into cls.
+        for name, fn in zip(self.names, fns):
+            fn.__qualname__ = f"{cls.__qualname__}.{fn.__name__}"
+            if self.unconditional_adds.get(name, False):
+                setattr(cls, name, fn)
+            else:
+                already_exists = _set_new_attribute(cls, name, fn)
+
+                # See if it's an error to overwrite this particular
+                # function.
+                if already_exists:
+                    msg_extra = self.overwrite_errors.get(name)
+                    if msg_extra:
+                        error_msg = (
+                            f"Cannot overwrite attribute {fn.__name__} "
+                            f"in class {cls.__name__}"
+                        )
+                        if msg_extra is not True:
+                            error_msg = f"{error_msg} {msg_extra}"
+
+                        raise TypeError(error_msg)
 
 
 def _field_assign(frozen: bool, name: str, value: str, self_name: str) -> str:
@@ -477,9 +589,9 @@ def _field_assign(frozen: bool, name: str, value: str, self_name: str) -> str:
     # hard-code "self", since that might be a field name.
     if frozen:
         return (
-            f"__dataclass_builtins_object__.__setattr__({self_name},{name!r},{value})"
+            f"  __dataclass_builtins_object__.__setattr__({self_name},{name!r},{value})"
         )
-    return f"{self_name}.{name}={value}"
+    return f"  {self_name}.{name}={value}"
 
 
 def _field_init(
@@ -585,8 +697,9 @@ def _init_fn(
     frozen: bool,
     has_post_init: bool,
     self_name: str,
+    func_builder: _FuncBuilder,
     slots: bool = False,
-) -> Any:
+) -> None:
     # fields contains both real fields and InitVar pseudo-fields.
 
     # Make sure we don't have fields without defaults following fields
@@ -594,26 +707,29 @@ def _init_fn(
     # function source code, but catching it here gives a better error
     # message, and future-proofs us in case we build up the function
     # using ast.
-    seen_default = False
+    seen_default = None
     for f in std_fields:
         # Only consider the non-kw-only fields in the __init__ call.
         if f.init:
             if not (f.default is MISSING and f.default_factory is MISSING):
-                seen_default = True
+                seen_default = f
             elif seen_default:
                 raise TypeError(
-                    f"non-default argument {f.name!r} follows default argument"
+                    f"non-default argument {f.name!r} follows "
+                    f"default argument {seen_default.name!r}"
                 )
 
-    globals = {
-        "MISSING": MISSING,
-        "__dataclass_HAS_DEFAULT_FACTORY__": _HAS_DEFAULT_FACTORY,
-        "__dataclass_builtins_object__": object,
-    }
+    locals = {f"__dataclass_type_{f.name}__": f.type for f in fields}
+    locals.update(
+        {
+            "__dataclass_HAS_DEFAULT_FACTORY__": _HAS_DEFAULT_FACTORY,
+            "__dataclass_builtins_object__": object,
+        }
+    )
 
     body_lines = []
     for f in fields:
-        line = _field_init(f, frozen, globals, self_name, slots)
+        line = _field_init(f, frozen, locals, self_name, slots)
         # line is None means that this field doesn't require
         # initialization (it's a pseudo-field).  Just skip it.
         if line:
@@ -622,13 +738,11 @@ def _init_fn(
     # Does this class have a post-init function?
     if has_post_init:
         params_str = ",".join(f.name for f in fields if f._field_type is _FIELD_INITVAR)
-        body_lines.append(f"{self_name}.{_POST_INIT_NAME}({params_str})")
+        body_lines.append(f"  {self_name}.{_POST_INIT_NAME}({params_str})")
 
     # If no body lines, use 'pass'.
     if not body_lines:
-        body_lines = ["pass"]
-
-    locals = {f"__dataclass_type_{f.name}__": f.type for f in fields}
+        body_lines = ["  pass"]
 
     # Build the parameter list: std fields first, then kw_only fields
     # after a '*' separator.
@@ -637,101 +751,45 @@ def _init_fn(
         _init_params += ["*"]
         _init_params += [_init_param(f) for f in kw_only_fields]
 
-    return _create_fn(
+    func_builder.add_fn(
         "__init__",
         [self_name] + _init_params,
         body_lines,
         locals=locals,
-        globals=globals,
         return_type=None,
     )
 
 
-def _repr_fn(fields: List[Field]) -> Any:
-    fn = _create_fn(
-        "__repr__",
-        ("self",),
-        [
-            'return self.__class__.__qualname__ + f"('
-            + ", ".join([f"{f.name}={{self.{f.name}!r}}" for f in fields])
-            + ')"'
-        ],
-    )
-    return recursive_repr()(fn)
-
-
-def _frozen_get_del_attr(cls: type, fields: List[Field]) -> Tuple[Any, Any]:
-    # Both generated functions share this globals dict, matching
-    # CPython <=3.12; neither _create_fn() call mutates it (only
-    # locals gains entries, and only when return_type is passed).
-    globals = {"cls": cls, "FrozenInstanceError": FrozenInstanceError}
+def _frozen_set_del_attr(
+    cls: type, fields: List[Field], func_builder: _FuncBuilder
+) -> None:
+    locals = {"__class__": cls, "FrozenInstanceError": FrozenInstanceError}
+    condition = "type(self) is __class__"
     if fields:
-        fields_str = "(" + ",".join(repr(f.name) for f in fields) + ",)"
-    else:
-        # Special case for the zero-length tuple.
-        fields_str = "()"
-    return (
-        _create_fn(
-            "__setattr__",
-            ("self", "name", "value"),
-            (
-                f"if type(self) is cls or name in {fields_str}:",
-                ' raise FrozenInstanceError(f"cannot assign to field {name!r}")',
-                "super(cls, self).__setattr__(name, value)",
-            ),
-            globals=globals,
+        condition += " or name in {" + ", ".join(repr(f.name) for f in fields) + "}"
+
+    func_builder.add_fn(
+        "__setattr__",
+        ("self", "name", "value"),
+        (
+            f"  if {condition}:",
+            '   raise FrozenInstanceError(f"cannot assign to field {name!r}")',
+            "  super(__class__, self).__setattr__(name, value)",
         ),
-        _create_fn(
-            "__delattr__",
-            ("self", "name"),
-            (
-                f"if type(self) is cls or name in {fields_str}:",
-                ' raise FrozenInstanceError(f"cannot delete field {name!r}")',
-                "super(cls, self).__delattr__(name)",
-            ),
-            globals=globals,
+        locals=locals,
+        overwrite_error=True,
+    )
+    func_builder.add_fn(
+        "__delattr__",
+        ("self", "name"),
+        (
+            f"  if {condition}:",
+            '   raise FrozenInstanceError(f"cannot delete field {name!r}")',
+            "  super(__class__, self).__delattr__(name)",
         ),
+        locals=locals,
+        overwrite_error=True,
     )
-
-
-def _cmp_fn(name: str, op: str, self_tuple: str, other_tuple: str) -> Any:
-    # Create a comparison function.  If the fields in the object are
-    # named 'x' and 'y', then self_tuple is the string
-    # '(self.x,self.y)' and other_tuple is the string
-    # '(other.x,other.y)'.
-
-    return _create_fn(
-        name,
-        ("self", "other"),
-        [
-            "if other.__class__ is self.__class__:",
-            f" return {self_tuple}{op}{other_tuple}",
-            "return NotImplemented",
-        ],
-    )
-
-
-def _eq_fn(fields: List[Field]) -> Any:
-    # Build an __eq__ that compares field-by-field with a
-    # self-identity short-circuit (checked before the class check
-    # to avoid unnecessary work).  Matches CPython 3.13 (gh-109870).
-    if fields:
-        terms = " and ".join([f"self.{f.name}==other.{f.name}" for f in fields])
-    else:
-        terms = "True"
-    body = [
-        "if self is other:",
-        " return True",
-        "if other.__class__ is self.__class__:",
-        f" return {terms}",
-        "return NotImplemented",
-    ]
-    return _create_fn("__eq__", ("self", "other"), body)
-
-
-def _hash_fn(fields: List[Field]) -> Any:
-    self_tuple = _tuple_str("self", fields)
-    return _create_fn("__hash__", ("self",), [f"return hash({self_tuple})"])
 
 
 def _is_classvar(a_type: Any, typing: Any) -> bool:
@@ -940,16 +998,26 @@ def _set_new_attribute(cls: type, name: str, value: Any) -> bool:
 # function that is a no-op, use None to signify that.
 
 
-def _hash_set_none(cls: type, fields: List[Field]) -> None:
-    return None
+def _hash_set_none(cls: type, fields: List[Field], func_builder: _FuncBuilder) -> None:
+    # It's sort of a hack that I'm setting this here, instead of at
+    # func_builder.add_fns_to_class time, but since this is an
+    # exceptional case (it's not setting an attribute to a function,
+    # but to a scalar value), just do it directly here.
+    cls.__hash__ = None  # type: ignore[assignment]
 
 
-def _hash_add(cls: type, fields: List[Field]) -> Any:
+def _hash_add(cls: type, fields: List[Field], func_builder: _FuncBuilder) -> None:
     flds = [f for f in fields if (f.compare if f.hash is None else f.hash)]
-    return _hash_fn(flds)
+    self_tuple = _tuple_str("self", flds)
+    func_builder.add_fn(
+        "__hash__",
+        ("self",),
+        [f"  return hash({self_tuple})"],
+        unconditional_add=True,
+    )
 
 
-def _hash_exception(cls: type, fields: List[Field]) -> None:
+def _hash_exception(cls: type, fields: List[Field], func_builder: _FuncBuilder) -> None:
     # Raise an exception.
     raise TypeError(f"Cannot overwrite attribute __hash__ in class {cls.__name__}")
 
@@ -1136,6 +1204,16 @@ def _process_class(
     # is defined by the base class, which is found first.
     fields = {}
 
+    if cls.__module__ in sys.modules:
+        globals = sys.modules[cls.__module__].__dict__
+    else:
+        # Theoretically this can happen if someone writes
+        # a custom string to cls.__module__.  In which case
+        # such dataclass won't be fully introspectable
+        # (w.r.t. typing.get_type_hints) but will still function
+        # correctly.
+        globals = {}
+
     setattr(
         cls,
         _PARAMS,
@@ -1270,25 +1348,24 @@ def _process_class(
     ]
     (std_init_fields, kw_only_init_fields) = _fields_in_init_order(all_init_fields)
 
+    func_builder = _FuncBuilder(globals)
+
     if init:
         # Does this class have a post-init function?
         has_post_init = hasattr(cls, _POST_INIT_NAME)
 
-        _set_new_attribute(
-            cls,
-            "__init__",
-            _init_fn(
-                all_init_fields,
-                std_init_fields,
-                kw_only_init_fields,
-                frozen,
-                has_post_init,
-                # The name to use for the "self"
-                # param in __init__.  Use "self"
-                # if possible.
-                "__dataclass_self__" if "self" in fields else "self",
-                slots,
-            ),
+        _init_fn(
+            all_init_fields,
+            std_init_fields,
+            kw_only_init_fields,
+            frozen,
+            has_post_init,
+            # The name to use for the "self"
+            # param in __init__.  Use "self"
+            # if possible.
+            "__dataclass_self__" if "self" in fields else "self",
+            func_builder,
+            slots,
         )
 
     # Set __match_args__ if match_args is true and __init__ is being
@@ -1304,13 +1381,38 @@ def _process_class(
 
     if repr:
         flds = [f for f in field_list if f.repr]
-        _set_new_attribute(cls, "__repr__", _repr_fn(flds))
+        func_builder.add_fn(
+            "__repr__",
+            ("self",),
+            [
+                '  return f"{self.__class__.__qualname__}('
+                + ", ".join([f"{f.name}={{self.{f.name}!r}}" for f in flds])
+                + ')"'
+            ],
+            locals={"__dataclasses_recursive_repr": recursive_repr},
+            decorator="@__dataclasses_recursive_repr()",
+        )
 
     if eq:
         # Create __eq__ method.  There's no need for a __ne__ method,
-        # since python will call __eq__ and negate it.
+        # since python will call __eq__ and negate it.  The
+        # self-identity short-circuit is checked before the class
+        # check to avoid unnecessary work; matches CPython 3.13
+        # (gh-109870).
         flds = [f for f in field_list if f.compare]
-        _set_new_attribute(cls, "__eq__", _eq_fn(flds))
+        terms = [f"self.{f.name}==other.{f.name}" for f in flds]
+        field_comparisons = " and ".join(terms) or "True"
+        func_builder.add_fn(
+            "__eq__",
+            ("self", "other"),
+            [
+                "  if self is other:",
+                "   return True",
+                "  if other.__class__ is self.__class__:",
+                f"   return {field_comparisons}",
+                "  return NotImplemented",
+            ],
+        )
 
     if order:
         # Create and set the ordering methods.
@@ -1323,30 +1425,35 @@ def _process_class(
             ("__gt__", ">"),
             ("__ge__", ">="),
         ]:
-            if _set_new_attribute(
-                cls, name, _cmp_fn(name, op, self_tuple, other_tuple)
-            ):
-                raise TypeError(
-                    f"Cannot overwrite attribute {name} "
-                    f"in class {cls.__name__}. Consider using "
-                    "functools.total_ordering"
-                )
+            # Create a comparison function.  If the fields in the
+            # object are named 'x' and 'y', then self_tuple is the
+            # string '(self.x,self.y)' and other_tuple is the string
+            # '(other.x,other.y)'.
+            func_builder.add_fn(
+                name,
+                ("self", "other"),
+                [
+                    "  if other.__class__ is self.__class__:",
+                    f"   return {self_tuple}{op}{other_tuple}",
+                    "  return NotImplemented",
+                ],
+                overwrite_error="Consider using functools.total_ordering",
+            )
 
     if frozen:
-        for fn in _frozen_get_del_attr(cls, field_list):
-            if _set_new_attribute(cls, fn.__name__, fn):
-                raise TypeError(
-                    f"Cannot overwrite attribute {fn.__name__} in class {cls.__name__}"
-                )
+        _frozen_set_del_attr(cls, field_list, func_builder)
 
     # Decide if/how we're going to create a hash function.
     hash_action = _hash_action[
         bool(unsafe_hash), bool(eq), bool(frozen), has_explicit_hash
     ]
     if hash_action:
-        # No need to call _set_new_attribute here, since by the time
-        # we're here the overwriting is unconditional.
-        cls.__hash__ = hash_action(cls, field_list)  # type: ignore[assignment]
+        cls.__hash__ = hash_action(cls, field_list, func_builder)  # type: ignore[assignment]
+
+    # Generate the methods and add them to the class.  This needs to
+    # be done before the __doc__ logic below, since inspect will look
+    # at the __init__ signature.
+    func_builder.add_fns_to_class(cls)
 
     if not getattr(cls, "__doc__"):
         # Create a class doc-string.
@@ -1473,27 +1580,54 @@ def asdict(obj: Any, *, dict_factory: Callable[..., Any] = dict) -> Any:
 
 
 def _asdict_inner(obj: Any, dict_factory: Callable[..., Any]) -> Any:
-    if _is_dataclass_instance(obj):
-        result = []
-        for f in fields(obj):
-            value = _asdict_inner(getattr(obj, f.name), dict_factory)
-            result.append((f.name, value))
-        return dict_factory(result)
-    elif isinstance(obj, tuple) and hasattr(obj, "_fields"):
-        # obj is a namedtuple.  Recurse into it, but the returned
-        # object is another namedtuple of the same type.  This is
-        # similar to how other list- or tuple-derived classes are
-        # treated (see below), but we just need to create them
-        # differently because a namedtuple's __new__ needs to be
-        # called differently (see bpo-34363).
-        return type(obj)(*[_asdict_inner(v, dict_factory) for v in obj])
-    elif isinstance(obj, (list, tuple)):
-        return type(obj)(_asdict_inner(v, dict_factory) for v in obj)
-    elif isinstance(obj, dict):
-        return type(obj)(
+    obj_type = type(obj)
+    if obj_type in _ATOMIC_TYPES:
+        return obj
+    elif hasattr(obj_type, _FIELDS):
+        # dataclass instance: fast path for the common case
+        if dict_factory is dict:
+            return {
+                f.name: _asdict_inner(getattr(obj, f.name), dict) for f in fields(obj)
+            }
+        else:
+            return dict_factory(
+                [
+                    (f.name, _asdict_inner(getattr(obj, f.name), dict_factory))
+                    for f in fields(obj)
+                ]
+            )
+    # handle the builtin types first for speed; subclasses handled below
+    elif obj_type is list:
+        return [_asdict_inner(v, dict_factory) for v in obj]
+    elif obj_type is dict:
+        return {
+            _asdict_inner(k, dict_factory): _asdict_inner(v, dict_factory)
+            for k, v in obj.items()
+        }
+    elif obj_type is tuple:
+        return tuple([_asdict_inner(v, dict_factory) for v in obj])
+    elif issubclass(obj_type, tuple):
+        if hasattr(obj, "_fields"):
+            # obj is a namedtuple.  Recurse into it, but the returned
+            # object is another namedtuple of the same type.  This is
+            # similar to how other list- or tuple-derived classes are
+            # treated (see below), but we just need to create them
+            # differently because a namedtuple's __new__ needs to be
+            # called differently (see bpo-34363).
+            return obj_type(*[_asdict_inner(v, dict_factory) for v in obj])
+        else:
+            return obj_type(_asdict_inner(v, dict_factory) for v in obj)
+    elif issubclass(obj_type, dict):
+        # Note: unlike CPython 3.12+, defaultdict is not special-cased
+        # here (see the feature matrix in the readme).
+        return obj_type(
             (_asdict_inner(k, dict_factory), _asdict_inner(v, dict_factory))
             for k, v in obj.items()
         )
+    elif issubclass(obj_type, list):
+        # Assume we can create an object of this type by passing in a
+        # generator.
+        return obj_type(_asdict_inner(v, dict_factory) for v in obj)
     else:
         return copy.deepcopy(obj)
 
@@ -1523,12 +1657,12 @@ def astuple(obj: Any, *, tuple_factory: Callable[..., Any] = tuple) -> Any:
 
 
 def _astuple_inner(obj: Any, tuple_factory: Callable[..., Any]) -> Any:
-    if _is_dataclass_instance(obj):
-        result = []
-        for f in fields(obj):
-            value = _astuple_inner(getattr(obj, f.name), tuple_factory)
-            result.append(value)
-        return tuple_factory(result)
+    if type(obj) in _ATOMIC_TYPES:
+        return obj
+    elif _is_dataclass_instance(obj):
+        return tuple_factory(
+            [_astuple_inner(getattr(obj, f.name), tuple_factory) for f in fields(obj)]
+        )
     elif isinstance(obj, tuple) and hasattr(obj, "_fields"):
         # obj is a namedtuple.  Recurse into it, but the returned
         # object is another namedtuple of the same type (see

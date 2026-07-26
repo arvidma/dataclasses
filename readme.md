@@ -24,6 +24,8 @@ Matrix of backported and not-yet-backported features:
 | 3.12 | Special underscore field names like `_dflt_x` (gh-98886) | Backported |
 | 3.12 | Inherited `__dict__` slot handling | Backported |
 | 3.12–3.13 | Optimized `__eq__` and `__repr__` recursion guards | Backported |
+| 3.12 | `asdict()`/`astuple()` atomic-type fast paths (gh-91896) | Backported |
+| 3.13 | Single-`exec` method generation (`_FuncBuilder`, gh-107550) | Backported |
 | 3.13 | Non-frozen subclass of frozen: mutable attr set/delete | Backported |
 | 3.14 | `decorator` parameter for `make_dataclass()` | Backported |
 | 3.12 | `module` parameter for `make_dataclass()` | Not backported |
