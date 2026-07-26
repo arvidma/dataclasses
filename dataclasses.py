@@ -189,6 +189,33 @@ MISSING = _MISSING_TYPE()
 # read-only proxy that can be shared among all fields.
 _EMPTY_METADATA: Any = types.MappingProxyType({})
 
+# Types that asdict()/astuple() can return as-is instead of going
+# through copy.deepcopy() (CPython 3.12, gh-91896).  Spelled with
+# type(...) where the named aliases (types.NoneType and friends) only
+# exist on Python 3.10+.
+_ATOMIC_TYPES = frozenset(
+    {
+        # Common JSON Serializable types
+        type(None),
+        bool,
+        int,
+        float,
+        str,
+        # Other common types
+        complex,
+        bytes,
+        # Other types that are also unaffected by deepcopy
+        type(...),
+        type(NotImplemented),
+        types.CodeType,
+        types.BuiltinFunctionType,
+        types.FunctionType,
+        type,
+        range,
+        property,
+    }
+)
+
 
 # Markers for the various kinds of fields and pseudo-fields.
 class _FIELD_BASE:
@@ -1473,27 +1500,54 @@ def asdict(obj: Any, *, dict_factory: Callable[..., Any] = dict) -> Any:
 
 
 def _asdict_inner(obj: Any, dict_factory: Callable[..., Any]) -> Any:
-    if _is_dataclass_instance(obj):
-        result = []
-        for f in fields(obj):
-            value = _asdict_inner(getattr(obj, f.name), dict_factory)
-            result.append((f.name, value))
-        return dict_factory(result)
-    elif isinstance(obj, tuple) and hasattr(obj, "_fields"):
-        # obj is a namedtuple.  Recurse into it, but the returned
-        # object is another namedtuple of the same type.  This is
-        # similar to how other list- or tuple-derived classes are
-        # treated (see below), but we just need to create them
-        # differently because a namedtuple's __new__ needs to be
-        # called differently (see bpo-34363).
-        return type(obj)(*[_asdict_inner(v, dict_factory) for v in obj])
-    elif isinstance(obj, (list, tuple)):
-        return type(obj)(_asdict_inner(v, dict_factory) for v in obj)
-    elif isinstance(obj, dict):
-        return type(obj)(
+    obj_type = type(obj)
+    if obj_type in _ATOMIC_TYPES:
+        return obj
+    elif hasattr(obj_type, _FIELDS):
+        # dataclass instance: fast path for the common case
+        if dict_factory is dict:
+            return {
+                f.name: _asdict_inner(getattr(obj, f.name), dict) for f in fields(obj)
+            }
+        else:
+            return dict_factory(
+                [
+                    (f.name, _asdict_inner(getattr(obj, f.name), dict_factory))
+                    for f in fields(obj)
+                ]
+            )
+    # handle the builtin types first for speed; subclasses handled below
+    elif obj_type is list:
+        return [_asdict_inner(v, dict_factory) for v in obj]
+    elif obj_type is dict:
+        return {
+            _asdict_inner(k, dict_factory): _asdict_inner(v, dict_factory)
+            for k, v in obj.items()
+        }
+    elif obj_type is tuple:
+        return tuple([_asdict_inner(v, dict_factory) for v in obj])
+    elif issubclass(obj_type, tuple):
+        if hasattr(obj, "_fields"):
+            # obj is a namedtuple.  Recurse into it, but the returned
+            # object is another namedtuple of the same type.  This is
+            # similar to how other list- or tuple-derived classes are
+            # treated (see below), but we just need to create them
+            # differently because a namedtuple's __new__ needs to be
+            # called differently (see bpo-34363).
+            return obj_type(*[_asdict_inner(v, dict_factory) for v in obj])
+        else:
+            return obj_type(_asdict_inner(v, dict_factory) for v in obj)
+    elif issubclass(obj_type, dict):
+        # Note: unlike CPython 3.12+, defaultdict is not special-cased
+        # here (see the feature matrix in the readme).
+        return obj_type(
             (_asdict_inner(k, dict_factory), _asdict_inner(v, dict_factory))
             for k, v in obj.items()
         )
+    elif issubclass(obj_type, list):
+        # Assume we can create an object of this type by passing in a
+        # generator.
+        return obj_type(_asdict_inner(v, dict_factory) for v in obj)
     else:
         return copy.deepcopy(obj)
 
@@ -1523,12 +1577,12 @@ def astuple(obj: Any, *, tuple_factory: Callable[..., Any] = tuple) -> Any:
 
 
 def _astuple_inner(obj: Any, tuple_factory: Callable[..., Any]) -> Any:
-    if _is_dataclass_instance(obj):
-        result = []
-        for f in fields(obj):
-            value = _astuple_inner(getattr(obj, f.name), tuple_factory)
-            result.append(value)
-        return tuple_factory(result)
+    if type(obj) in _ATOMIC_TYPES:
+        return obj
+    elif _is_dataclass_instance(obj):
+        return tuple_factory(
+            [_astuple_inner(getattr(obj, f.name), tuple_factory) for f in fields(obj)]
+        )
     elif isinstance(obj, tuple) and hasattr(obj, "_fields"):
         # obj is a namedtuple.  Recurse into it, but the returned
         # object is another namedtuple of the same type (see
