@@ -1,4 +1,4 @@
-# Backports of Python dataclass features of 3.8+ to 3.6
+# Backports of Python dataclass features of 3.8+ to 3.6+
 
 Adds most dataclass features from Python versions after 3.7 to the excellent but long-since 
 abandoned backport by Eric V. Smith (https://github.com/ericvsmith/dataclasses/).
