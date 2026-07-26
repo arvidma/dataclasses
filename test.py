@@ -1855,6 +1855,47 @@ check("inherited __dict__ slot works", InheritsDictSlot().__dict__ == {})
 
 
 # ============================================================
+section("asdict()/astuple() with namedtuple values")
+# ============================================================
+
+# bpo-34363: namedtuples must be rebuilt with positional args, and the
+# result keeps the namedtuple type.
+
+PointNT = namedtuple("PointNT", "x y")
+
+
+@dataclass
+class WithNamedTuple:
+    pt: PointNT
+
+
+wnt = WithNamedTuple(PointNT(1, 2))
+wnt_d = asdict(wnt)
+check("asdict namedtuple keeps type", type(wnt_d["pt"]) is PointNT)
+check("asdict namedtuple values", wnt_d["pt"] == PointNT(1, 2))
+
+wnt_t = astuple(wnt)
+check("astuple namedtuple keeps type", type(wnt_t[0]) is PointNT)
+check("astuple namedtuple values", wnt_t == (PointNT(1, 2),))
+
+
+@dataclass
+class InsideNamedTuple:
+    v: int
+
+
+wnt_nested = WithNamedTuple(PointNT(InsideNamedTuple(1), 2))
+check(
+    "asdict recurses into namedtuple members",
+    asdict(wnt_nested)["pt"] == PointNT({"v": 1}, 2),
+)
+check(
+    "astuple recurses into namedtuple members",
+    astuple(wnt_nested) == (PointNT((1,), 2),),
+)
+
+
+# ============================================================
 # Summary
 # ============================================================
 

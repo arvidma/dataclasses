@@ -1415,6 +1415,14 @@ def _asdict_inner(obj: Any, dict_factory: Callable[..., Any]) -> Any:
             value = _asdict_inner(getattr(obj, f.name), dict_factory)
             result.append((f.name, value))
         return dict_factory(result)
+    elif isinstance(obj, tuple) and hasattr(obj, "_fields"):
+        # obj is a namedtuple.  Recurse into it, but the returned
+        # object is another namedtuple of the same type.  This is
+        # similar to how other list- or tuple-derived classes are
+        # treated (see below), but we just need to create them
+        # differently because a namedtuple's __new__ needs to be
+        # called differently (see bpo-34363).
+        return type(obj)(*[_asdict_inner(v, dict_factory) for v in obj])
     elif isinstance(obj, (list, tuple)):
         return type(obj)(_asdict_inner(v, dict_factory) for v in obj)
     elif isinstance(obj, dict):
@@ -1457,6 +1465,11 @@ def _astuple_inner(obj: Any, tuple_factory: Callable[..., Any]) -> Any:
             value = _astuple_inner(getattr(obj, f.name), tuple_factory)
             result.append(value)
         return tuple_factory(result)
+    elif isinstance(obj, tuple) and hasattr(obj, "_fields"):
+        # obj is a namedtuple.  Recurse into it, but the returned
+        # object is another namedtuple of the same type (see
+        # bpo-34363 and _asdict_inner above).
+        return type(obj)(*[_astuple_inner(v, tuple_factory) for v in obj])
     elif isinstance(obj, (list, tuple)):
         return type(obj)(_astuple_inner(v, tuple_factory) for v in obj)
     elif isinstance(obj, dict):
