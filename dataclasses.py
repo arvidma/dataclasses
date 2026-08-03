@@ -169,7 +169,7 @@ class FrozenInstanceError(AttributeError):
 # A sentinel object for default values to signal that a default
 # factory will be used.  This is given a nice repr() which will appear
 # in the function signature of dataclasses' constructors.
-class _HAS_DEFAULT_FACTORY_CLASS:
+class _HAS_DEFAULT_FACTORY_CLASS:  # noqa: N801
     def __repr__(self) -> str:
         return "<factory>"
 
@@ -179,7 +179,7 @@ _HAS_DEFAULT_FACTORY = _HAS_DEFAULT_FACTORY_CLASS()
 
 # A sentinel object to detect if a parameter is supplied or not.  Use
 # a class to give it a better repr.
-class _MISSING_TYPE:
+class _MISSING_TYPE:  # noqa: N801
     pass
 
 
@@ -218,7 +218,7 @@ _ATOMIC_TYPES = frozenset(
 
 
 # Markers for the various kinds of fields and pseudo-fields.
-class _FIELD_BASE:
+class _FIELD_BASE:  # noqa: N801
     def __init__(self, name: str) -> None:
         self.name = name
 
@@ -248,7 +248,7 @@ _POST_INIT_NAME = "__post_init__"
 _MODULE_IDENTIFIER_RE = re.compile(r"^(?:\s*(\w+)\s*\.)?\s*(\w+)")
 
 
-class _KW_ONLY_TYPE:
+class _KW_ONLY_TYPE:  # noqa: N801
     pass
 
 
@@ -539,7 +539,7 @@ class _FuncBuilder:
         if len(self.names) == 0:
             return_names = "()"
         else:
-            return_names = f'({",".join(self.names)},)'
+            return_names = f"({','.join(self.names)},)"
 
         # txt is the entire function we're going to execute, including
         # the bodies of the functions we're defining.  Here's a greatly
@@ -554,7 +554,9 @@ class _FuncBuilder:
         # return __init__,__repr__
         txt = f"def __create_fn__({local_vars}):\n{fns_src}\n return {return_names}"
         ns: Dict[str, Any] = {}
-        exec(txt, self.globals, ns)
+        # exec() of generated source is how dataclasses builds __init__
+        # and friends; the text is assembled here, never user-supplied.
+        exec(txt, self.globals, ns)  # noqa: S102
         fns = ns["__create_fn__"](**self.locals)
 
         # Now that we've generated the functions, assign them into cls.
@@ -595,7 +597,11 @@ def _field_assign(frozen: bool, name: str, value: str, self_name: str) -> str:
 
 
 def _field_init(
-    f: Field, frozen: bool, globals: Dict[str, Any], self_name: str, slots: bool
+    f: Field,
+    frozen: bool,
+    globals: Dict[str, Any],  # noqa: A002
+    self_name: str,
+    slots: bool,
 ) -> Optional[str]:
     # Return the text of the line in the body of __init__ that will
     # initialize this field.
@@ -719,7 +725,7 @@ def _init_fn(
                     f"default argument {seen_default.name!r}"
                 )
 
-    locals = {f"__dataclass_type_{f.name}__": f.type for f in fields}
+    locals = {f"__dataclass_type_{f.name}__": f.type for f in fields}  # noqa: A001
     locals.update(
         {
             "__dataclass_HAS_DEFAULT_FACTORY__": _HAS_DEFAULT_FACTORY,
@@ -753,7 +759,7 @@ def _init_fn(
 
     func_builder.add_fn(
         "__init__",
-        [self_name] + _init_params,
+        [self_name, *_init_params],
         body_lines,
         locals=locals,
         return_type=None,
@@ -763,7 +769,7 @@ def _init_fn(
 def _frozen_set_del_attr(
     cls: type, fields: List[Field], func_builder: _FuncBuilder
 ) -> None:
-    locals = {"__class__": cls, "FrozenInstanceError": FrozenInstanceError}
+    locals = {"__class__": cls, "FrozenInstanceError": FrozenInstanceError}  # noqa: A001
     condition = "type(self) is __class__"
     if fields:
         condition += " or name in {" + ", ".join(repr(f.name) for f in fields) + "}"
@@ -802,8 +808,7 @@ def _is_classvar(a_type: Any, typing: Any) -> bool:
     if hasattr(typing, "_ClassVar"):
         return type(a_type) is typing._ClassVar
     return a_type is typing.ClassVar or (
-        type(a_type) is typing._GenericAlias
-        and a_type.__origin__ is typing.ClassVar
+        type(a_type) is typing._GenericAlias and a_type.__origin__ is typing.ClassVar
     )
 
 
@@ -1099,7 +1104,7 @@ def _update_func_cell_for__class__(f: Any, oldcls: type, newcls: type) -> bool:
         except AttributeError:
             # cell_contents became writable in Python 3.7
             # (bpo-30486); on 3.6 set it through the C API instead.
-            import ctypes
+            import ctypes  # noqa: PLC0415
 
             ctypes.pythonapi.PyCell_Set(
                 ctypes.py_object(closure), ctypes.py_object(newcls)
@@ -1156,10 +1161,13 @@ def _add_slots(cls: type, is_frozen: bool, weakref_slot: bool) -> type:
 
     if is_frozen:
         # Need this for pickling frozen classes with slots.
+        # setattr(), not plain assignment: newcls is typed as `type`,
+        # which has no __setstate__ and whose __getstate__ has a
+        # different signature, so mypy rejects the direct form.
         if "__getstate__" not in cls_dict:
-            setattr(newcls, "__getstate__", _dataclass_getstate)
+            setattr(newcls, "__getstate__", _dataclass_getstate)  # noqa: B010
         if "__setstate__" not in cls_dict:
-            setattr(newcls, "__setstate__", _dataclass_setstate)
+            setattr(newcls, "__setstate__", _dataclass_setstate)  # noqa: B010
 
     # Fix up any closures which reference __class__.  This is used to
     # fix zero argument super so that it points to the correct class
@@ -1169,7 +1177,7 @@ def _add_slots(cls: type, is_frozen: bool, weakref_slot: bool) -> type:
     # given cell.  (gh-90562)
     for member in newcls.__dict__.values():
         # If this is a wrapped function, unwrap it.
-        member = getattr(member, "__wrapped__", member)
+        member = getattr(member, "__wrapped__", member)  # noqa: PLW2901
 
         if isinstance(member, types.FunctionType):
             if _update_func_cell_for__class__(member, cls, newcls):
@@ -1205,14 +1213,14 @@ def _process_class(
     fields = {}
 
     if cls.__module__ in sys.modules:
-        globals = sys.modules[cls.__module__].__dict__
+        globals = sys.modules[cls.__module__].__dict__  # noqa: A001
     else:
         # Theoretically this can happen if someone writes
         # a custom string to cls.__module__.  In which case
         # such dataclass won't be fully introspectable
         # (w.r.t. typing.get_type_hints) but will still function
         # correctly.
-        globals = {}
+        globals = {}  # noqa: A001
 
     setattr(
         cls,
@@ -1267,9 +1275,9 @@ def _process_class(
     # we can.
     cls_fields = []
     # Get a reference to this module for the _is_kw_only() test.
-    KW_ONLY_seen = False
+    KW_ONLY_seen = False  # noqa: N806
     dataclasses = sys.modules[__name__]
-    for name, type in cls_annotations.items():
+    for name, type in cls_annotations.items():  # noqa: A001
         # See if this is a marker to change the value of kw_only.
         if _is_kw_only(type, dataclasses) or (
             isinstance(type, str)
@@ -1281,7 +1289,7 @@ def _process_class(
                 raise TypeError(
                     f"{name!r} is KW_ONLY, but KW_ONLY has already been specified"
                 )
-            KW_ONLY_seen = True
+            KW_ONLY_seen = True  # noqa: N806
             kw_only = True
         else:
             # Otherwise it's a field of some type.
@@ -1455,7 +1463,7 @@ def _process_class(
     # at the __init__ signature.
     func_builder.add_fns_to_class(cls)
 
-    if not getattr(cls, "__doc__"):
+    if not cls.__doc__:
         # Create a class doc-string.
         cls.__doc__ = cls.__name__ + str(inspect.signature(cls)).replace(" -> None", "")
 
@@ -1759,7 +1767,7 @@ def make_dataclass(
     namespace["__annotations__"] = anns
     # We use `types.new_class()` instead of simply `type()` to allow dynamic creation
     # of generic dataclassses.
-    assert namespace is not None
+    assert namespace is not None  # noqa: S101
     _ns = namespace
     cls = types.new_class(cls_name, bases, {}, lambda ns: ns.update(_ns))
     if decorator is None:
