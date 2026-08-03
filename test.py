@@ -35,7 +35,9 @@ from dataclasses import (
     replace,
 )
 
-print(f"Running on Python {sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}")
+print(
+    f"Running on Python {sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}"
+)
 
 passed = 0
 failed = 0
@@ -328,6 +330,7 @@ check("InitVar default", WithInitVar(5).x == 5)
 section("ClassVar")
 # ============================================================
 
+
 @dataclass
 class WithClassVar:
     x: int
@@ -503,7 +506,7 @@ class Child(Parent):
 c = Child(1, 2, 3)
 check("inherited fields", c.x == 1 and c.y == 2 and c.z == 3)
 check("child fields includes parent", len(fields(Child)) == 3)
-check("child repr", "Child(x=1, y=2, z=3)" == repr(c))
+check("child repr", repr(c) == "Child(x=1, y=2, z=3)")
 
 # Parent and child eq
 check("parent-child not eq", Parent(1, 2) != Child(1, 2, 0))
@@ -647,7 +650,7 @@ class NoRepr:
 
 
 nr = NoRepr(1)
-check("custom repr not added", "NoRepr(x=1)" != repr(nr))
+check("custom repr not added", repr(nr) != "NoRepr(x=1)")
 
 
 # ============================================================
@@ -788,6 +791,7 @@ check("replace with InitVar default", ivr2.x == 3)
 section("weakref_slot")
 # ============================================================
 
+
 @dataclass(slots=True, weakref_slot=True)
 class WeakRefable:
     x: int
@@ -809,6 +813,7 @@ check_raises(
 # ============================================================
 section("Pickling frozen+slots")
 # ============================================================
+
 
 @dataclass(frozen=True, slots=True)
 class Picklable:
@@ -960,6 +965,7 @@ check("recursive eq doesn't crash", req == req)
 # ============================================================
 section("Frozen deepcopy")
 # ============================================================
+
 
 @dataclass(frozen=True, slots=False)
 class FrozenDeepCopyNoSlots:
@@ -1407,6 +1413,7 @@ check("is_dataclass rejects fake __dataclass_fields__", not is_dataclass(fdc_obj
 # ============================================================
 section("asdict with tuple_factory-like nested containers")
 # ============================================================
+
 
 @dataclass
 class AsDictUser:

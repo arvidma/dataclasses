@@ -1,18 +1,166 @@
-# This module must stay runnable on Python 3.6.  py37 is the oldest
-# version ruff can target; it is close enough to keep the UP
-# (pyupgrade) rules from suggesting 3.9+/3.10+-only syntax.
+# This module must stay runnable on Python 3.6.
+#
+# py37 is the oldest version ruff can target -- there is no `py36` among
+# the allowed values -- so the target version alone is one release too
+# permissive.  It correctly silences everything gated on 3.8+ (PEP 585
+# generics, PEP 604 unions, walrus, positional-only parameters, nested
+# same-quote f-strings, parenthesized context managers, ...), but it
+# still lets through the handful of rules gated on exactly 3.7.  Those
+# are listed under "Python 3.6 floor" in lint.ignore below; anything
+# added later that rewrites code into a 3.7+ API belongs there too.
+#
+# The backstop is CI: .github/workflows/tests.yml runs the suite on a
+# real 3.6 interpreter, so a rewrite ruff cannot know is too new still
+# fails before it can be merged.
 target-version = "py37"
 
+# ruff 0.16 lints and formats fenced code blocks inside Markdown too.
+# The issue archive quotes upstream CPython and pre-fix snippets
+# verbatim -- reformatting those would rewrite the record -- and the
+# readme's examples are deliberately compact, so keep ruff off both.
+extend-exclude = ["*.md"]
+
+[format]
+# The formatter reads target-version as well, which is what keeps it
+# from emitting 3.9+ parenthesized context managers or 3.12+ nested
+# same-type quotes inside f-strings.  The rest is spelled out rather
+# than left to the defaults so that a new ruff release changing a
+# default cannot reformat the file behind our backs.
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+skip-magic-trailing-comma = false
+# The docstrings are CPython's, ASCII tables and doctest-ish samples
+# included.  Leave their code blocks exactly as upstream wrote them.
+docstring-code-format = false
+
 [lint]
-# Pin the rule selection so results don't drift when a new ruff
-# release changes its defaults (ruff 0.16 enabled UP/PLR/RUF/... by
-# default, which both fights 3.6-compatible code and flags the
-# intentional self-comparisons in test.py).
+# Selection is pinned to an explicit list of rule families so that a new
+# ruff release cannot silently change what CI enforces (ruff 0.16 turned
+# UP/PLR/RUF/... on by default, which is what prompted this file).  New
+# rules inside a selected family still arrive on a ruff upgrade, so CI
+# pins the ruff version too -- bump the pin and this file together.
+select = [
+    "F",     # pyflakes
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "YTT",   # flake8-2020
+    "ASYNC", # flake8-async
+    "S",     # flake8-bandit
+    "BLE",   # flake8-blind-except
+    "B",     # flake8-bugbear
+    "A",     # flake8-builtins
+    "C4",    # flake8-comprehensions
+    "DTZ",   # flake8-datetimez
+    "T10",   # flake8-debugger
+    "EXE",   # flake8-executable
+    "ISC",   # flake8-implicit-str-concat
+    "ICN",   # flake8-import-conventions
+    "LOG",   # flake8-logging
+    "G",     # flake8-logging-format
+    "INT",   # flake8-gettext
+    "PIE",   # flake8-pie
+    "T20",   # flake8-print
+    "Q",     # flake8-quotes
+    "RSE",   # flake8-raise
+    "RET",   # flake8-return
+    "SIM",   # flake8-simplify
+    "TID",   # flake8-tidy-imports
+    "PGH",   # pygrep-hooks
+    "FLY",   # flynt
+    "PERF",  # perflint
+    "FURB",  # refurb
+    "PL",    # pylint
+    "RUF",   # ruff-specific rules
+]
+
+# Families deliberately left out, so the next person doesn't have to
+# rediscover why:
 #
-# flake8-builtins (A) is deliberately not enabled: the code mirrors
-# CPython's own naming (`globals`, `locals`, `type` as a loop
-# variable, and the module name itself), and staying diffable against
-# upstream is worth more than avoiding builtin shadowing.  The
-# `noqa: A002` comments in the source are kept as documentation of
-# where that shadowing is intentional.
-select = ["E4", "E7", "E9", "F"]
+#   FA      `from __future__ import annotations` does not exist before
+#           3.7.  This is the single most dangerous family for us: it
+#           has no version gate to lean on, since ruff cannot express a
+#           3.6 target.  Never select it.
+#   TC      moves typing-only imports into `if TYPE_CHECKING:` blocks,
+#           which needs either FA or stringized annotations; the module
+#           also uses `typing` at runtime for ClassVar detection.
+#   ANN     annotations are already complete -- `mypy --strict` in CI
+#           enforces that far better than ANN can.
+#   D       docstrings are CPython's, wording and layout included.
+#   ARG     the `_hash_action` table dispatches through functions with a
+#           uniform (cls, fields, func_builder) signature, so unused
+#           parameters there are structural, not dead code.
+#   SLF     the module reads `f._field_type` and friends off its own
+#           Field objects by design.
+#   PTH     os.path is not deprecated and matches upstream.
+#   C90     upstream's `_process_class` is 29 branches of table-driven
+#           logic; splitting it up would be a rewrite, not a cleanup.
+#   PYI     aimed at .pyi stubs; the little that applies here is wrong
+#           (the suite tests `collections.namedtuple` support on purpose).
+#   EM/TRY/COM/CPY/ERA/FBT/DOC/TD/FIX
+#           exception-message, trailing-comma, copyright, commented-out
+#           code and boolean-argument style: all fight either the
+#           formatter or the goal of staying diffable against CPython.
+ignore = [
+    # --- Python 3.6 floor (target-version can only say py37) ---
+    "UP022",   # subprocess capture_output= is 3.7+
+    "UP036",   # would strip the `sys.version_info < (3, 7)` fallbacks
+    "FURB162", # datetime.fromisoformat is 3.7+
+    # suggests typing_extensions.get_annotations: a third-party dependency
+    # this module refuses to have, and 3.10+ even with it
+    "RUF063",
+
+    # --- the formatter owns these ---
+    # the formatter wraps what can be wrapped; what is left over is
+    # CPython's ASCII truth table and its docstring samples
+    "E501",
+    "ISC001", # explicitly incompatible with the formatter
+
+    # --- staying diffable against CPython's dataclasses.py ---
+    "RUF022",  # __all__ is grouped by topic upstream, not sorted
+    "RUF023",  # ditto for __slots__
+    "SIM102",  # upstream's nested ifs carry explanatory comments between them
+    "SIM108",  # if/else blocks where a ternary would be denser, not clearer
+    "RET505",  # elif after return
+    "RET506",  # else after raise
+    "RET507",  # else after continue
+    "RET508",  # else after break
+    "PLR5501", # else: if: instead of elif
+    "PLR0911", # too many return statements
+    "PLR0912", # too many branches
+    "PLR0913", # too many arguments -- @dataclass() has eleven, by API contract
+    "PLR0915", # too many statements
+    "PLR0917", # too many positional arguments
+    "PLR2004", # magic value comparison
+]
+
+# Everything above is a rule this repository never wants to see.  The
+# one-off deviations from CPython that ruff is right to notice -- the
+# UPPER_CASE sentinel classes (N801) and the KW_ONLY_seen flag (N806),
+# the arguments and locals named after builtins (A001, A002), the
+# setattr() calls mypy needs (B010), the exec() that generates the
+# methods (S102), the 3.6-only `import ctypes` fallback (PLC0415) --
+# carry a `# noqa` at the site instead, so RUF100 flags them the day
+# they stop being needed.
+
+[lint.per-file-ignores]
+# test.py is a self-contained harness: it prints its results, keeps
+# global counters, catches everything so one failure cannot abort the
+# run, and compares objects to themselves on purpose while testing
+# __eq__ and the MISSING sentinel.
+"test.py" = [
+    "T201",    # print is the harness's only output
+    "PLW0603", # global passed/failed counters
+    "BLE001",  # the harness must catch every exception a case can raise
+    "PLR0124", # `x == x` is the point when testing __eq__
+    "PLW1641", # test classes define __eq__ without __hash__ on purpose
+    "S301",    # pickle round-trips are part of the test surface
+]
+
+[lint.flake8-builtins]
+# A module named `dataclasses` shadowing the stdlib module is the entire
+# point of a backport, so A005 is answered here rather than ignored.
+builtins-allowed-modules = ["dataclasses"]
